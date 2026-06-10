@@ -1,65 +1,205 @@
 ﻿using System;
-using System.ComponentModel;
-using System.Configuration;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
-namespace AnimeStudio.CLI.Properties {
-    public static class AppSettings
+namespace AnimeStudio.CLI.Properties
+{
+    public sealed class TypeSetting
     {
-        public static string Get(string key)
-        {
-            return ConfigurationManager.AppSettings[key];
-        }
-
-        public static TValue Get<TValue>(string key, TValue defaultValue)
-        {
-            try
-            {
-                var value = Get(key);
-
-                if (string.IsNullOrEmpty(value)) 
-                    return defaultValue;
-
-                return (TValue)TypeDescriptor.GetConverter(typeof(TValue)).ConvertFromInvariantString(value);
-            }
-            catch (Exception)
-            {
-                Console.WriteLine($"Invalid value at \"{key}\", switching to default value [{defaultValue}] !!");
-                return defaultValue;
-            }
-            
-        }
+        public bool? parse { get; set; }
+        public bool? export { get; set; }
     }
 
-    public class Settings
+    public sealed class UvSetting
     {
-        private static Settings defaultInstance = new Settings();
+        public bool? enabled { get; set; }
+        public int? channel { get; set; }
+    }
+
+    public sealed class Settings
+    {
+        private const string FileName = "appsettings.json";
+
+        private static readonly JsonSerializerOptions SerializerOptions = new()
+        {
+            AllowTrailingCommas = true,
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
+        private static readonly Settings defaultInstance = Load();
 
         public static Settings Default => defaultInstance;
 
-        public bool convertTexture => AppSettings.Get("convertTexture", true);
-        public bool convertAudio => AppSettings.Get("convertAudio", true);
-        public ImageFormat convertType => AppSettings.Get("convertType", ImageFormat.Png);
-        public bool eulerFilter => AppSettings.Get("eulerFilter", true);
-        public decimal filterPrecision => AppSettings.Get("filterPrecision", (decimal)0.25);
-        public bool exportAllNodes => AppSettings.Get("exportAllNodes", true);
-        public bool exportSkins => AppSettings.Get("exportSkins", true);
-        public bool exportMaterials => AppSettings.Get("exportMaterials", false);
-        public bool collectAnimations => AppSettings.Get("collectAnimations", true);
-        public bool exportAnimations => AppSettings.Get("exportAnimations", true);
-        public decimal boneSize => AppSettings.Get("boneSize", (decimal)10);
-        public int fbxVersion => AppSettings.Get("fbxVersion", 3);
-        public int fbxFormat => AppSettings.Get("fbxFormat", 0);
-        public decimal scaleFactor => AppSettings.Get("scaleFactor", (decimal)1);
-        public bool exportBlendShape => AppSettings.Get("exportBlendShape", true);
-        public bool castToBone => AppSettings.Get("castToBone", false);
-        public bool restoreExtensionName => AppSettings.Get("restoreExtensionName", true);
-        public bool enableFileLogging => AppSettings.Get("enableFileLogging", false);
-        public bool minimalAssetMap => AppSettings.Get("minimalAssetMap", true);
-        public bool allowDuplicates => AppSettings.Get("allowDuplicates", false);
-        public bool scrapeMonos => AppSettings.Get("scrapeMonos", false);
-        public string types => AppSettings.Get("types", string.Empty);
-        public string texs => AppSettings.Get("texs", string.Empty);
-        public string uvs => AppSettings.Get("uvs", string.Empty);
+        public bool convertTexture { get; set; } = true;
+        public bool convertAudio { get; set; } = true;
+        public ImageFormat convertType { get; set; } = ImageFormat.Png;
+        public bool eulerFilter { get; set; } = true;
+        public decimal filterPrecision { get; set; } = 0.25m;
+        public bool exportAllNodes { get; set; } = true;
+        public bool exportSkins { get; set; } = true;
+        public bool exportMaterials { get; set; }
+        public bool collectAnimations { get; set; } = true;
+        public bool exportAnimations { get; set; } = true;
+        public decimal boneSize { get; set; } = 10m;
+        public int fbxVersion { get; set; } = 3;
+        public int fbxFormat { get; set; }
+        public decimal scaleFactor { get; set; } = 1m;
+        public bool exportBlendShape { get; set; } = true;
+        public bool castToBone { get; set; }
+        public bool restoreExtensionName { get; set; } = true;
+        public bool enableFileLogging { get; set; }
+        public bool minimalAssetMap { get; set; } = true;
+        public bool allowDuplicates { get; set; }
+        public bool scrapeMonos { get; set; }
+        public Dictionary<ClassIDType, TypeSetting> types { get; set; } = CreateDefaultTypes();
+        public Dictionary<string, UvSetting> uvs { get; set; } = CreateDefaultUvs();
+        public Dictionary<string, int> texs { get; set; } = [];
 
+        public Dictionary<ClassIDType, (bool, bool)> GetTypeFlags() =>
+            types.ToDictionary(
+                pair => pair.Key,
+                pair => (pair.Value.parse.GetValueOrDefault(), pair.Value.export.GetValueOrDefault()));
+
+        public Dictionary<string, (bool, int)> GetUvs() =>
+            uvs.ToDictionary(
+                pair => pair.Key,
+                pair => (pair.Value.enabled.GetValueOrDefault(), pair.Value.channel.GetValueOrDefault()));
+
+        public Dictionary<string, int> GetTextures() => new(texs);
+
+        private static Settings Load()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, FileName);
+            if (!File.Exists(path))
+            {
+                Console.Error.WriteLine($"Configuration file not found at \"{path}\"; using defaults.");
+                return new Settings();
+            }
+
+            try
+            {
+                var settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), SerializerOptions)
+                    ?? new Settings();
+                settings.types = MergeTypeSettings(CreateDefaultTypes(), settings.types);
+                settings.uvs = MergeUvSettings(CreateDefaultUvs(), settings.uvs);
+                settings.texs ??= [];
+                return settings;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
+            {
+                Console.Error.WriteLine($"Unable to load \"{path}\"; using defaults. {e.Message}");
+                return new Settings();
+            }
+        }
+
+        private static Dictionary<ClassIDType, TypeSetting> MergeTypeSettings(
+            Dictionary<ClassIDType, TypeSetting> defaults,
+            Dictionary<ClassIDType, TypeSetting> configured)
+        {
+            if (configured == null)
+            {
+                return defaults;
+            }
+
+            foreach (var pair in configured)
+            {
+                if (pair.Value is null)
+                {
+                    continue;
+                }
+
+                defaults.TryGetValue(pair.Key, out var fallback);
+                defaults[pair.Key] = new TypeSetting
+                {
+                    parse = pair.Value.parse ?? fallback?.parse ?? false,
+                    export = pair.Value.export ?? fallback?.export ?? false
+                };
+            }
+
+            return defaults;
+        }
+
+        private static Dictionary<string, UvSetting> MergeUvSettings(
+            Dictionary<string, UvSetting> defaults,
+            Dictionary<string, UvSetting> configured)
+        {
+            if (configured == null)
+            {
+                return defaults;
+            }
+
+            foreach (var pair in configured)
+            {
+                if (pair.Value is null)
+                {
+                    continue;
+                }
+
+                defaults.TryGetValue(pair.Key, out var fallback);
+                defaults[pair.Key] = new UvSetting
+                {
+                    enabled = pair.Value.enabled ?? fallback?.enabled ?? false,
+                    channel = pair.Value.channel ?? fallback?.channel ?? 0
+                };
+            }
+
+            return defaults;
+        }
+
+        private static Dictionary<string, UvSetting> CreateDefaultUvs() =>
+            new()
+            {
+                ["UV0"] = new UvSetting { enabled = true, channel = 0 },
+                ["UV1"] = new UvSetting { enabled = true, channel = 1 },
+                ["UV2"] = new UvSetting { enabled = false, channel = 0 },
+                ["UV3"] = new UvSetting { enabled = false, channel = 0 },
+                ["UV4"] = new UvSetting { enabled = false, channel = 0 },
+                ["UV5"] = new UvSetting { enabled = false, channel = 0 },
+                ["UV6"] = new UvSetting { enabled = false, channel = 0 },
+                ["UV7"] = new UvSetting { enabled = false, channel = 0 }
+            };
+
+        private static Dictionary<ClassIDType, TypeSetting> CreateDefaultTypes() =>
+            new()
+            {
+                [ClassIDType.Animation] = Type(true, false),
+                [ClassIDType.AnimationClip] = Type(true, true),
+                [ClassIDType.Animator] = Type(true, true),
+                [ClassIDType.AnimatorController] = Type(true, false),
+                [ClassIDType.AnimatorOverrideController] = Type(true, false),
+                [ClassIDType.AssetBundle] = Type(true, false),
+                [ClassIDType.AudioClip] = Type(true, true),
+                [ClassIDType.Avatar] = Type(true, false),
+                [ClassIDType.Font] = Type(true, true),
+                [ClassIDType.GameObject] = Type(true, false),
+                [ClassIDType.IndexObject] = Type(true, false),
+                [ClassIDType.Material] = Type(true, true),
+                [ClassIDType.Mesh] = Type(true, true),
+                [ClassIDType.MeshFilter] = Type(true, false),
+                [ClassIDType.MeshRenderer] = Type(true, false),
+                [ClassIDType.MiHoYoBinData] = Type(true, true),
+                [ClassIDType.MonoBehaviour] = Type(true, true),
+                [ClassIDType.MonoScript] = Type(true, false),
+                [ClassIDType.MovieTexture] = Type(true, true),
+                [ClassIDType.PlayerSettings] = Type(true, false),
+                [ClassIDType.RectTransform] = Type(true, false),
+                [ClassIDType.Shader] = Type(true, true),
+                [ClassIDType.SkinnedMeshRenderer] = Type(true, false),
+                [ClassIDType.Sprite] = Type(true, true),
+                [ClassIDType.SpriteAtlas] = Type(true, false),
+                [ClassIDType.TextAsset] = Type(true, true),
+                [ClassIDType.Texture2D] = Type(true, true),
+                [ClassIDType.Transform] = Type(true, false),
+                [ClassIDType.VideoClip] = Type(true, true),
+                [ClassIDType.ResourceManager] = Type(true, false)
+            };
+
+        private static TypeSetting Type(bool parse, bool export) =>
+            new() { parse = parse, export = export };
     }
 }

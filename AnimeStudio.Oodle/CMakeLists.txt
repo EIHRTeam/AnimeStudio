@@ -1,11 +1,12 @@
-cmake_minimum_required(VERSION 3.13)
-project(bun C CXX)
+cmake_minimum_required(VERSION 3.20)
+project(AnimeStudioOoz LANGUAGES C CXX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(OOZ_BUILD_BUN "Build Bun library and utilities" ON)
-option(OOZ_BUILD_EXE "Build ooz executable" ON)
+option(OOZ_BUILD_BUN "Build Bun library and utilities" OFF)
+option(OOZ_BUILD_EXE "Build ooz executable" OFF)
 option(OOZ_BUILD_VALIDATE "Build ooz validator" OFF)
 
 set(OOZ_SOURCES
@@ -34,12 +35,18 @@ set(OOZ_SOURCES
     targetver.h
 )
 
-add_library(libooz SHARED ${OOZ_SOURCES})
+add_library(AnimeStudioOoz SHARED ${OOZ_SOURCES})
 
-target_compile_definitions(libooz PUBLIC OOZ_DYNAMIC)
-target_compile_definitions(libooz PRIVATE OOZ_BUILD_DLL)
+set_target_properties(AnimeStudioOoz PROPERTIES
+    OUTPUT_NAME "AnimeStudio.Ooz"
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
 
-target_include_directories(libooz PUBLIC simde)
+target_compile_definitions(AnimeStudioOoz PUBLIC OOZ_DYNAMIC)
+target_compile_definitions(AnimeStudioOoz PRIVATE OOZ_BUILD_DLL)
+
+target_include_directories(AnimeStudioOoz PUBLIC simde)
 
 if (OOZ_BUILD_VALIDATE OR OOZ_BUILD_BUN)
     if (UNIX)

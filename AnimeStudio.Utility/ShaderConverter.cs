@@ -1050,9 +1050,18 @@ namespace AnimeStudio
                     case ShaderGpuProgramType.DX9PixelSM20:
                     case ShaderGpuProgramType.DX9PixelSM30:
                         {
+                            var programCodeSpan = m_ProgramCode.AsSpan();
+                            if (!PlatformCapabilities.SupportsDirectXShaderDecompilation)
+                            {
+                                AppendUnsupportedDirectXShader(
+                                    sb,
+                                    programCodeSpan,
+                                    $"DirectX shader disassembly is not available on {PlatformCapabilities.PlatformName}.");
+                                break;
+                            }
+
                             try
                             {
-                                var programCodeSpan = m_ProgramCode.AsSpan();
                                 var g = Compiler.Disassemble(programCodeSpan.GetPinnableReference(), new PointerUSize((ulong)programCodeSpan.Length), DisasmFlags.None, "");
 
                                 sb.Append($"// hash: {ComputeHash64(programCodeSpan):x8}\n");
@@ -1091,6 +1100,12 @@ namespace AnimeStudio
                             }
 
                             var buffSpan = m_ProgramCode.AsSpan(start);
+
+                            if (!PlatformCapabilities.TryGetDirectXShaderDecompilationSupport(out var reason))
+                            {
+                                AppendUnsupportedDirectXShader(sb, buffSpan, reason);
+                                break;
+                            }
 
                             sb.Append($"// hash: {ComputeHash64(buffSpan):x8}\n");
                             try
@@ -1159,6 +1174,16 @@ namespace AnimeStudio
             sb.Append('"');
             return sb.ToString();
         }
+
+        private void AppendUnsupportedDirectXShader(
+            StringBuilder sb,
+            Span<byte> shaderByteCode,
+            string reason)
+        {
+            sb.Append($"// hash: {ComputeHash64(shaderByteCode):x8}\n");
+            sb.Append($"// unsupported: {reason}\n");
+        }
+
         public ulong ComputeHash64(Span<byte> data)
         {
             ulong hval = 0;
@@ -1176,11 +1201,23 @@ namespace AnimeStudio
         private const string DLL_NAME = "HLSLDecompiler";
         static HLSLDecompiler()
         {
-            DllLoader.PreloadDll(DLL_NAME);
+            DllLoader.RegisterDllImportResolver(typeof(HLSLDecompiler).Assembly);
         }
         public static void DecompileShader(byte[] shaderByteCode, int shaderByteCodeSize, out string hlslText)
         {
-            var code = Decompile(shaderByteCode, shaderByteCodeSize, out var shaderText, out var shaderTextSize);
+            PlatformCapabilities.EnsureNativeLibraryAvailable(DLL_NAME);
+            int code;
+            IntPtr shaderText;
+            int shaderTextSize;
+            try
+            {
+                code = Decompile(shaderByteCode, shaderByteCodeSize, out shaderText, out shaderTextSize);
+            }
+            catch (DllNotFoundException)
+            {
+                throw PlatformCapabilities.CreateNativeLibraryUnavailableException(DLL_NAME);
+            }
+
             if (code != 0)
             {
                 throw new Exception($"Unable to decompile shader, Error code: {code}");

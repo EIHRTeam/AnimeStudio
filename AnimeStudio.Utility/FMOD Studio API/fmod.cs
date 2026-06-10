@@ -1591,7 +1591,7 @@ namespace FMOD
 
         static Factory()
         {
-            DllLoader.PreloadDll(VERSION.dll);
+            DllLoader.RegisterDllImportResolver(typeof(Factory).Assembly);
         }
 
         public static RESULT System_Create(out System system)

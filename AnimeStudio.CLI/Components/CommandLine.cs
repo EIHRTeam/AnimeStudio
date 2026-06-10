@@ -1,50 +1,49 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.IO;
 using System.Linq;
-using System.CommandLine;
-using System.CommandLine.Binding;
-using System.CommandLine.Parsing;
 using System.Text.RegularExpressions;
-using System.Collections.Generic;
 
 namespace AnimeStudio.CLI
 {
     public static class CommandLine
     {
-        public static void Init(string[] args)
+        public static int Init(string[] args)
         {
             var rootCommand = RegisterOptions();
-            rootCommand.Invoke(args);
+            return rootCommand.Parse(args).Invoke();
         }
+
         public static RootCommand RegisterOptions()
         {
-            var optionsBinder = new OptionsBinder();
-            var rootCommand = new RootCommand()
-            {
-                optionsBinder.Silent,
-                optionsBinder.LoggerFlags,
-                optionsBinder.TypeFilter,
-                optionsBinder.NameFilter,
-                optionsBinder.ContainerFilter,
-                optionsBinder.GameName,
-                optionsBinder.MapOp,
-                optionsBinder.MapType,
-                optionsBinder.MapName,
-                optionsBinder.UnityVersion,
-                optionsBinder.GroupAssetsType,
-                optionsBinder.AssetExportType,
-                optionsBinder.Key,
-                optionsBinder.AIFile,
-                optionsBinder.DummyDllFolder,
-                optionsBinder.Input,
-                optionsBinder.Output
-            };
+            var options = new CommandOptions();
+            var rootCommand = new RootCommand();
 
-            rootCommand.SetHandler(Program.Run, optionsBinder);
+            rootCommand.Options.Add(options.Silent);
+            rootCommand.Options.Add(options.LoggerFlags);
+            rootCommand.Options.Add(options.TypeFilter);
+            rootCommand.Options.Add(options.NameFilter);
+            rootCommand.Options.Add(options.ContainerFilter);
+            rootCommand.Options.Add(options.GameName);
+            rootCommand.Options.Add(options.MapOp);
+            rootCommand.Options.Add(options.MapType);
+            rootCommand.Options.Add(options.MapName);
+            rootCommand.Options.Add(options.UnityVersion);
+            rootCommand.Options.Add(options.GroupAssetsType);
+            rootCommand.Options.Add(options.AssetExportType);
+            rootCommand.Options.Add(options.Key);
+            rootCommand.Options.Add(options.AIFile);
+            rootCommand.Options.Add(options.DummyDllFolder);
+            rootCommand.Arguments.Add(options.Input);
+            rootCommand.Arguments.Add(options.Output);
 
+            rootCommand.SetAction(parseResult => Program.Run(options.Bind(parseResult)));
             return rootCommand;
         }
     }
+
     public class Options
     {
         public bool Silent { get; set; }
@@ -62,11 +61,11 @@ namespace AnimeStudio.CLI
         public byte Key { get; set; }
         public FileInfo AIFile { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
-        public FileInfo Input { get; set; }
+        public FileSystemInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
     }
 
-    public class OptionsBinder : BinderBase<Options>
+    public sealed class CommandOptions
     {
         public readonly Option<bool> Silent;
         public readonly Option<LoggerEvent[]> LoggerFlags;
@@ -83,175 +82,223 @@ namespace AnimeStudio.CLI
         public readonly Option<byte> Key;
         public readonly Option<FileInfo> AIFile;
         public readonly Option<DirectoryInfo> DummyDllFolder;
-        public readonly Argument<FileInfo> Input;
+        public readonly Argument<FileSystemInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
 
-        public OptionsBinder()
+        public CommandOptions()
         {
-            Silent = new Option<bool>("--silent", "Hide log messages.");
-            LoggerFlags = new Option<LoggerEvent[]>("--logger_flags", "Flags to control toggle log events.") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Verbose|Debug|Info|etc.." };
-            TypeFilter = new Option<string[]>("--types", "Specify unity class type(s)") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Texture2D|Shader:Parse|Sprite:Both|etc.." };
-            NameFilter = new Option<Regex[]>("--names", result => 
+            Silent = new Option<bool>("--silent")
             {
-                var items = new List<Regex>();
-                var value = result.Tokens.Single().Value;
-                if (File.Exists(value))
-                {
-                    var lines = File.ReadLines(value);
-                    foreach (var line in lines)
-                    {
-                        if (string.IsNullOrWhiteSpace(line))
-                        {
-                            continue;
-                        }
-
-                        try
-                        {
-                            items.Add(new Regex(line, RegexOptions.IgnoreCase));
-                        }
-                        catch (ArgumentException e)
-                        {
-                            continue;
-                        }
-                    }
-                }
-                else
-                {
-                    items.AddRange(result.Tokens.Select(x => new Regex(x.Value, RegexOptions.IgnoreCase)).ToArray());
-                }
-
-                return items.ToArray();
-            }, false, "Specify name regex filter(s).") { AllowMultipleArgumentsPerToken = true };
-            ContainerFilter = new Option<Regex[]>("--containers", result =>
+                Description = "Hide log messages."
+            };
+            LoggerFlags = new Option<LoggerEvent[]>("--logger_flags")
             {
-                var items = new List<Regex>();
-                var value = result.Tokens.Single().Value;
-                if (File.Exists(value))
-                {
-                    var lines = File.ReadLines(value);
-                    foreach(var line in lines)
-                    {
-                        if (string.IsNullOrWhiteSpace(line))
-                        {
-                            continue;
-                        }
-
-                        try
-                        {
-                            items.Add(new Regex(line, RegexOptions.IgnoreCase));
-                        }
-                        catch (ArgumentException e)
-                        {
-                            continue;
-                        }
-                    }
-                }
-                else
-                {
-                    items.AddRange(result.Tokens.Select(x => new Regex(x.Value, RegexOptions.IgnoreCase)).ToArray());
-                }
-
-                return items.ToArray();
-            }, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
-            GameName = new Option<string>("--game", $"Specify Game.") { IsRequired = true };
-            MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
-            MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
-            MapName = new Option<string>("--map_name", () => "assets_map", "Specify AssetMap file name.");
-            UnityVersion = new Option<string>("--unity_version", "Specify Unity version.");
-            GroupAssetsType = new Option<AssetGroupOption>("--group_assets", "Specify how exported assets should be grouped.");
-            AssetExportType = new Option<ExportType>("--export_type", "Specify how assets should be exported.");
-            AIFile = new Option<FileInfo>("--ai_file", "Specify asset_index json file path (to recover GI containers).").LegalFilePathsOnly();
-            DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
-            Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
-            Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
-
-            Key = new Option<byte>("--key", result =>
+                Description = "Flags to control toggle log events.",
+                HelpName = "Verbose|Debug|Info|etc..",
+                AllowMultipleArgumentsPerToken = true,
+                DefaultValueFactory = _ =>
+                [
+                    LoggerEvent.Debug,
+                    LoggerEvent.Info,
+                    LoggerEvent.Warning,
+                    LoggerEvent.Error
+                ]
+            };
+            TypeFilter = new Option<string[]>("--types")
             {
-                return ParseKey(result.Tokens.Single().Value);
-            }, false, "XOR key to decrypt MiHoYoBinData.");
-
-            LoggerFlags.AddValidator(FilterValidator);
-            TypeFilter.AddValidator(FilterValidator);
-            NameFilter.AddValidator(FilterValidator);
-            ContainerFilter.AddValidator(FilterValidator);
-            Key.AddValidator(result =>
+                Description = "Specify unity class type(s)",
+                HelpName = "Texture2D|Shader:Parse|Sprite:Both|etc..",
+                AllowMultipleArgumentsPerToken = true
+            };
+            NameFilter = CreateRegexOption("--names", "Specify name regex filter(s).");
+            ContainerFilter = CreateRegexOption("--containers", "Specify container regex filter(s).");
+            GameName = new Option<string>("--game")
             {
-                var value = result.Tokens.Single().Value;
-                try
-                {
-                    ParseKey(value);
-                }
-                catch (Exception e)
-                {
-                    result.ErrorMessage = "Invalid byte value.\n" + e.Message;
-                }
-            });
-
-            GameName.FromAmong(GameManager.GetGameNames());
-
-            LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Debug, LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
-            GroupAssetsType.SetDefaultValue(AssetGroupOption.ByType);
-            AssetExportType.SetDefaultValue(ExportType.Convert);
-            MapOp.SetDefaultValue(MapOpType.None);
-            MapType.SetDefaultValue(ExportListType.XML);
-        }
-        
-        public byte ParseKey(string value)
-        {
-            if (value.StartsWith("0x"))
+                Description = "Specify Game.",
+                Required = true
+            };
+            MapOp = new Option<MapOpType>("--map_op")
             {
-                value = value[2..];
-                return Convert.ToByte(value, 0x10);
-            }
-            else
+                Description = "Specify which map to build.",
+                DefaultValueFactory = _ => MapOpType.None
+            };
+            MapType = new Option<ExportListType>("--map_type")
             {
-                return byte.Parse(value);
-            }
+                Description = "AssetMap output type.",
+                DefaultValueFactory = _ => ExportListType.XML
+            };
+            MapName = new Option<string>("--map_name")
+            {
+                Description = "Specify AssetMap file name.",
+                DefaultValueFactory = _ => "assets_map"
+            };
+            UnityVersion = new Option<string>("--unity_version")
+            {
+                Description = "Specify Unity version."
+            };
+            GroupAssetsType = new Option<AssetGroupOption>("--group_assets")
+            {
+                Description = "Specify how exported assets should be grouped.",
+                DefaultValueFactory = _ => AssetGroupOption.ByType
+            };
+            AssetExportType = new Option<ExportType>("--export_type")
+            {
+                Description = "Specify how assets should be exported.",
+                DefaultValueFactory = _ => ExportType.Convert
+            };
+            Key = new Option<byte>("--key")
+            {
+                Description = "XOR key to decrypt MiHoYoBinData.",
+                CustomParser = ParseKey
+            };
+            AIFile = new Option<FileInfo>("--ai_file")
+            {
+                Description = "Specify asset_index json file path (to recover GI containers)."
+            };
+            DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls")
+            {
+                Description = "Specify DummyDll path."
+            };
+            Input = new Argument<FileSystemInfo>("input_path")
+            {
+                Description = "Input file/folder."
+            };
+            Output = new Argument<DirectoryInfo>("output_path")
+            {
+                Description = "Output folder."
+            };
+
+            LoggerFlags.Validators.Add(ValidateNonEmpty);
+            TypeFilter.Validators.Add(ValidateNonEmpty);
+            NameFilter.Validators.Add(ValidateNonEmpty);
+            ContainerFilter.Validators.Add(ValidateNonEmpty);
+            Key.Validators.Add(ValidateKey);
+
+            GameName.AcceptOnlyFromAmong(GameManager.GetGameNames());
+            AIFile.AcceptExistingOnly();
+            DummyDllFolder.AcceptExistingOnly();
+            Input.AcceptExistingOnly();
+            Output.AcceptLegalFilePathsOnly();
         }
 
-        public void FilterValidator(OptionResult result)
-        {
-            var values = result.Tokens.Select(x => x.Value).ToArray();
-            foreach (var val in values)
+        public Options Bind(ParseResult parseResult) =>
+            new()
             {
-                if (string.IsNullOrWhiteSpace(val))
-                {
-                    result.ErrorMessage = "Empty string.";
-                    return;
-                }
+                Silent = parseResult.GetValue(Silent),
+                LoggerFlags = parseResult.GetValue(LoggerFlags) ?? [],
+                TypeFilter = parseResult.GetValue(TypeFilter) ?? [],
+                NameFilter = parseResult.GetValue(NameFilter) ?? [],
+                ContainerFilter = parseResult.GetValue(ContainerFilter) ?? [],
+                GameName = parseResult.GetValue(GameName),
+                MapOp = parseResult.GetValue(MapOp),
+                MapType = parseResult.GetValue(MapType),
+                MapName = parseResult.GetValue(MapName),
+                UnityVersion = parseResult.GetValue(UnityVersion),
+                GroupAssetsType = parseResult.GetValue(GroupAssetsType),
+                AssetExportType = parseResult.GetValue(AssetExportType),
+                Key = parseResult.GetValue(Key),
+                AIFile = parseResult.GetValue(AIFile),
+                DummyDllFolder = parseResult.GetValue(DummyDllFolder),
+                Input = parseResult.GetRequiredValue(Input),
+                Output = parseResult.GetRequiredValue(Output)
+            };
 
+        private static Option<Regex[]> CreateRegexOption(string name, string description) =>
+            new(name)
+            {
+                Description = description,
+                AllowMultipleArgumentsPerToken = true,
+                CustomParser = ParseRegexFilters
+            };
+
+        private static Regex[] ParseRegexFilters(ArgumentResult result)
+        {
+            var values = result.Tokens.Select(token => token.Value).ToArray();
+            if (values.Length == 1 && File.Exists(values[0]))
+            {
+                return File.ReadLines(values[0])
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .Select(TryCreateRegex)
+                    .Where(regex => regex != null)
+                    .ToArray();
+            }
+
+            var regexes = new List<Regex>(values.Length);
+            foreach (var value in values)
+            {
                 try
                 {
-                    Regex.Match("", val, RegexOptions.IgnoreCase);
+                    regexes.Add(new Regex(value, RegexOptions.IgnoreCase));
                 }
                 catch (ArgumentException e)
                 {
-                    result.ErrorMessage = "Invalid Regex.\n" + e.Message;
-                    return;
+                    result.AddError("Invalid Regex.\n" + e.Message);
+                    return [];
                 }
+            }
+
+            return regexes.ToArray();
+        }
+
+        private static Regex TryCreateRegex(string value)
+        {
+            try
+            {
+                return new Regex(value, RegexOptions.IgnoreCase);
+            }
+            catch (ArgumentException)
+            {
+                return null;
             }
         }
 
-        protected override Options GetBoundValue(BindingContext bindingContext) =>
-        new()
+        private static byte ParseKey(ArgumentResult result)
         {
-            Silent = bindingContext.ParseResult.GetValueForOption(Silent),
-            LoggerFlags = bindingContext.ParseResult.GetValueForOption(LoggerFlags),
-            TypeFilter = bindingContext.ParseResult.GetValueForOption(TypeFilter),
-            NameFilter = bindingContext.ParseResult.GetValueForOption(NameFilter),
-            ContainerFilter = bindingContext.ParseResult.GetValueForOption(ContainerFilter),
-            GameName = bindingContext.ParseResult.GetValueForOption(GameName),
-            MapOp = bindingContext.ParseResult.GetValueForOption(MapOp),
-            MapType = bindingContext.ParseResult.GetValueForOption(MapType),
-            MapName = bindingContext.ParseResult.GetValueForOption(MapName),
-            UnityVersion = bindingContext.ParseResult.GetValueForOption(UnityVersion),
-            GroupAssetsType = bindingContext.ParseResult.GetValueForOption(GroupAssetsType),
-            AssetExportType = bindingContext.ParseResult.GetValueForOption(AssetExportType),
-            Key = bindingContext.ParseResult.GetValueForOption(Key),
-            AIFile = bindingContext.ParseResult.GetValueForOption(AIFile),
-            DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
-            Input = bindingContext.ParseResult.GetValueForArgument(Input),
-            Output = bindingContext.ParseResult.GetValueForArgument(Output)
-        };
+            var value = result.Tokens.Single().Value;
+            try
+            {
+                return ParseKey(value);
+            }
+            catch (Exception e) when (e is FormatException or OverflowException)
+            {
+                result.AddError("Invalid byte value.\n" + e.Message);
+                return default;
+            }
+        }
+
+        private static byte ParseKey(string value)
+        {
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                return Convert.ToByte(value[2..], 16);
+            }
+
+            return byte.Parse(value);
+        }
+
+        private static void ValidateKey(OptionResult result)
+        {
+            if (result.Tokens.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                ParseKey(result.Tokens.Single().Value);
+            }
+            catch (Exception e) when (e is FormatException or OverflowException)
+            {
+                result.AddError("Invalid byte value.\n" + e.Message);
+            }
+        }
+
+        private static void ValidateNonEmpty(OptionResult result)
+        {
+            if (result.Tokens.Any(token => string.IsNullOrWhiteSpace(token.Value)))
+            {
+                result.AddError("Empty string.");
+            }
+        }
     }
 }

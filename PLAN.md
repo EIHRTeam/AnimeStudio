@@ -57,7 +57,7 @@ GUI 与 Patcher 暂不迁移。共享项目保留 `net8.0;net9.0`，新增 `net1
 
 ## 阶段 2：CLI 与配置现代化
 
-**阶段完成状态：未开始**
+**阶段完成状态：已完成**
 
 - System.CommandLine 升级到稳定版 `2.0.9`。
 - 删除 `BinderBase`/`SetHandler`，使用 `SetAction(ParseResult)`、`CustomParser`、`Validators` 和 `GetValue`。
@@ -69,7 +69,7 @@ GUI 与 Patcher 暂不迁移。共享项目保留 `net8.0;net9.0`，新增 `net1
 
 ## 阶段 3：原生依赖和 RID 布局
 
-**阶段完成状态：未开始**
+**阶段完成状态：已完成**
 
 - 原生文件迁移到 `AnimeStudio.Libraries/runtimes/<rid>/native/`，发布时只复制当前 RID。
 - 使用 `NativeLibrary` 和逻辑库名统一解析 `.dll/.so/.dylib`，移除 `libdl`、`RTLD_GLOBAL` 和 `x86/x64` 目录推断。
@@ -83,7 +83,7 @@ GUI 与 Patcher 暂不迁移。共享项目保留 `net8.0;net9.0`，新增 `net1
 
 ## 阶段 4：平台能力与降级行为
 
-**阶段完成状态：未开始**
+**阶段完成状态：已完成**
 
 | 功能 | Windows x64 | Linux x64 | macOS ARM64 |
 |---|---|---|---|

@@ -612,6 +612,12 @@ namespace AnimeStudio
             resourceFileReaders.Clear();
 
             assetsFileIndexCache.Clear();
+            importFiles.Clear();
+            importFilesHash.Clear();
+            noexistFiles.Clear();
+            assetsFileListHash.Clear();
+            OffsetData.Clear();
+            AssetsHelper.ClearOffsets();
 
             tokenSource.Dispose();
             tokenSource = new CancellationTokenSource();

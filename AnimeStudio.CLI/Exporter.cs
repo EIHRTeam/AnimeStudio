@@ -442,9 +442,18 @@ namespace AnimeStudio.CLI
 
         public static bool ExportAnimationClip(AssetItem item, string exportPath)
         {
+            var m_AnimationClip = (AnimationClip)item.Asset;
+            if (!PlatformCapabilities.TryGetAclAnimationDecompressionSupport(m_AnimationClip, Studio.Game, out var reason))
+            {
+                Logger.Warning(
+                    $"Skipping ACL animation resource \"{item.Text}\" " +
+                    $"(PathID {item.m_PathID}, file {item.SourceFile.fileName}) " +
+                    $"for game {Studio.Game.Name} ({Studio.Game.Type}): {reason}");
+                return false;
+            }
+
             if (!TryExportFile(exportPath, item, ".anim", out var exportFullPath))
                 return false;
-            var m_AnimationClip = (AnimationClip)item.Asset;
             var str = m_AnimationClip.Convert();
             if (string.IsNullOrEmpty(str)) 
                 return false;
@@ -465,8 +474,8 @@ namespace AnimeStudio.CLI
                 collectAnimations = Properties.Settings.Default.collectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
-                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs),
-                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(Properties.Settings.Default.texs),
+                uvs = Properties.Settings.Default.GetUvs(),
+                texs = Properties.Settings.Default.GetTextures(),
             };
             var convert = animationList != null
                 ? new ModelConverter(m_Animator, options, animationList.Select(x => (AnimationClip)x.Asset).ToArray())
@@ -491,7 +500,7 @@ namespace AnimeStudio.CLI
                 return false;
 
             var m_GameObject = (GameObject)item.Asset;
-            return ExportGameObject(m_GameObject, exportFullPath + Path.DirectorySeparatorChar, animationList);
+            return ExportGameObject(m_GameObject, exportFullPath, animationList);
         }
 
         public static bool ExportGameObject(GameObject gameObject, string exportPath, List<AssetItem> animationList = null)
@@ -503,8 +512,8 @@ namespace AnimeStudio.CLI
                 collectAnimations = Properties.Settings.Default.collectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
-                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs),
-                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(Properties.Settings.Default.texs),
+                uvs = Properties.Settings.Default.GetUvs(),
+                texs = Properties.Settings.Default.GetTextures(),
             };
             var convert = animationList != null
                 ? new ModelConverter(gameObject, options, animationList.Select(x => (AnimationClip)x.Asset).ToArray())
@@ -525,7 +534,7 @@ namespace AnimeStudio.CLI
                     ExportJSONFile(matItem, materialExportPath);
                 }
             }
-            exportPath = exportPath + FixFileName(gameObject.m_Name) + ".fbx";
+            exportPath = Path.Combine(exportPath, $"{FixFileName(gameObject.m_Name)}.fbx");
             ExportFbx(convert, exportPath);
             return true;
         }

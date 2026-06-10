@@ -42,6 +42,13 @@ namespace AnimeStudio
 
         public static AnimationClipConverter Process(AnimationClip clip)
         {
+            if (!PlatformCapabilities.TryGetAclAnimationDecompressionSupport(clip, clip.assetsFile.game, out var reason))
+            {
+                throw new PlatformNotSupportedException(
+                    $"ACL animation resource \"{clip.m_Name}\" for game " +
+                    $"{clip.assetsFile.game.Name} ({clip.assetsFile.game.Type}) cannot be converted: {reason}");
+            }
+
             var converter = new AnimationClipConverter(clip);
             converter.ProcessInner();
             return converter;

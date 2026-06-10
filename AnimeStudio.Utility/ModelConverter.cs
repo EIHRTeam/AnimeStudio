@@ -790,6 +790,15 @@ namespace AnimeStudio
         {
             foreach (var animationClip in animationClipHashSet)
             {
+                if (!PlatformCapabilities.TryGetAclAnimationDecompressionSupport(animationClip, options.game, out var reason))
+                {
+                    Logger.Warning(
+                        $"Skipping ACL animation resource \"{animationClip.m_Name}\" " +
+                        $"(PathID {animationClip.m_PathID}, file {animationClip.assetsFile.fileName}) " +
+                        $"for game {options.game.Name} ({options.game.Type}): {reason}");
+                    continue;
+                }
+
                 var iAnim = new ImportedKeyframedAnimation();
                 var name = animationClip.m_Name;
                 if (AnimationList.Exists(x => x.Name == name))

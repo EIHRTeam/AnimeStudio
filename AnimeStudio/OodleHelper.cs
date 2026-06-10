@@ -1,11 +1,19 @@
 ﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using AnimeStudio.PInvoke;
 
 namespace AnimeStudio;
 public static class OodleHelper
 {
-    [DllImport(@"AnimeStudio.Ooz.dll", CallingConvention = CallingConvention.StdCall)]
+    private const string LibraryName = "AnimeStudio.Ooz";
+
+    static OodleHelper()
+    {
+        DllLoader.RegisterDllImportResolver(typeof(OodleHelper).Assembly);
+    }
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.StdCall)]
     static extern int Ooz_Decompress(ref byte compressedBuffer, int compressedBufferSize, ref byte decompressedBuffer, int decompressedBufferSize, int fuzzSafe, int checkCRC, int verbosity, IntPtr rawBuffer, int rawBufferSize, IntPtr fpCallback, IntPtr callbackUserData, IntPtr decoderMemory, IntPtr decoderMemorySize, int threadPhase);
 
     public static int Decompress(Span<byte> compressed, Span<byte> decompressed)

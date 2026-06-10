@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using AnimeStudio;
 using AnimeStudio.PInvoke;
 
 namespace ACLLibs
@@ -16,12 +17,20 @@ namespace ACLLibs
         private const string DLL_NAME = "acl";
         static ACL()
         {
-            DllLoader.PreloadDll(DLL_NAME);
+            DllLoader.RegisterDllImportResolver(typeof(ACL).Assembly);
         }
         public static void DecompressAll(byte[] data, out float[] values, out float[] times)
         {
+            PlatformCapabilities.EnsureNativeLibraryAvailable(DLL_NAME);
             var decompressedClip = new DecompressedClip();
-            DecompressAll(data, ref decompressedClip);
+            try
+            {
+                DecompressAllNative(data, ref decompressedClip);
+            }
+            catch (DllNotFoundException)
+            {
+                throw PlatformCapabilities.CreateNativeLibraryUnavailableException(DLL_NAME);
+            }
 
             values = new float[decompressedClip.ValuesCount];
             Marshal.Copy(decompressedClip.Values, values, 0, decompressedClip.ValuesCount);
@@ -29,16 +38,16 @@ namespace ACLLibs
             times = new float[decompressedClip.TimesCount];
             Marshal.Copy(decompressedClip.Times, times, 0, decompressedClip.TimesCount);
 
-            Dispose(ref decompressedClip);
+            DisposeNative(ref decompressedClip);
         }
 
         #region importfunctions
 
-        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void DecompressAll(byte[] data, ref DecompressedClip decompressedClip);
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecompressAll")]
+        private static extern void DecompressAllNative(byte[] data, ref DecompressedClip decompressedClip);
 
-        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void Dispose(ref DecompressedClip decompressedClip);
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Dispose")]
+        private static extern void DisposeNative(ref DecompressedClip decompressedClip);
 
         #endregion
     }
@@ -48,12 +57,20 @@ namespace ACLLibs
         private const string DLL_NAME = "sracl";
         static SRACL()
         {
-            DllLoader.PreloadDll(DLL_NAME);
+            DllLoader.RegisterDllImportResolver(typeof(SRACL).Assembly);
         }
         public static void DecompressAll(byte[] data, out float[] values, out float[] times)
         {
+            PlatformCapabilities.EnsureNativeLibraryAvailable(DLL_NAME);
             var decompressedClip = new DecompressedClip();
-            DecompressAll(data, ref decompressedClip);
+            try
+            {
+                DecompressAllNative(data, ref decompressedClip);
+            }
+            catch (DllNotFoundException)
+            {
+                throw PlatformCapabilities.CreateNativeLibraryUnavailableException(DLL_NAME);
+            }
 
             values = new float[decompressedClip.ValuesCount];
             Marshal.Copy(decompressedClip.Values, values, 0, decompressedClip.ValuesCount);
@@ -61,16 +78,16 @@ namespace ACLLibs
             times = new float[decompressedClip.TimesCount];
             Marshal.Copy(decompressedClip.Times, times, 0, decompressedClip.TimesCount);
 
-            Dispose(ref decompressedClip);
+            DisposeNative(ref decompressedClip);
         }
 
         #region importfunctions
 
-        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void DecompressAll(byte[] data, ref DecompressedClip decompressedClip);
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecompressAll")]
+        private static extern void DecompressAllNative(byte[] data, ref DecompressedClip decompressedClip);
 
-        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void Dispose(ref DecompressedClip decompressedClip);
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Dispose")]
+        private static extern void DisposeNative(ref DecompressedClip decompressedClip);
 
         #endregion
     }
@@ -81,11 +98,11 @@ namespace ACLLibs
         private const string DLL_NAME_ZZZ = "acldb_zzz";
         static DBACL()
         {
-            DllLoader.PreloadDll(DLL_NAME);
-            DllLoader.PreloadDll(DLL_NAME_ZZZ);
+            DllLoader.RegisterDllImportResolver(typeof(DBACL).Assembly);
         }
         public static void DecompressTracks(byte[] data, byte[] db, out float[] values, out float[] times, bool isZZZ = false)
         {
+            PlatformCapabilities.EnsureNativeLibraryAvailable(isZZZ ? DLL_NAME_ZZZ : DLL_NAME);
             var decompressedClip = new DecompressedClip();
 
             var dataPtr = Marshal.AllocHGlobal(data.Length + 8);
@@ -96,20 +113,33 @@ namespace ACLLibs
             var dbAligned = new IntPtr(16 * (((long)dbPtr + 15) / 16));
             Marshal.Copy(db, 0, dbAligned, db.Length);
 
-            // as long as m_ClipData is passed to acl_db.dll without the rest it should be fine
-            // m_databaseData doesn't seem to be used. For now
-            if (isZZZ)
+            try
             {
-                var streamer = new IntPtr(0);
-                DecompressTracksZZZ(dataAligned, dbAligned, streamer, ref decompressedClip);
+                // as long as m_ClipData is passed to acl_db.dll without the rest it should be fine
+                // m_databaseData doesn't seem to be used. For now
+                try
+                {
+                    if (isZZZ)
+                    {
+                        var streamer = new IntPtr(0);
+                        DecompressTracksZZZ(dataAligned, dbAligned, streamer, ref decompressedClip);
+                    }
+                    else
+                    {
+                        DecompressTracks(dataAligned, dbAligned, ref decompressedClip);
+                    }
+                }
+                catch (DllNotFoundException)
+                {
+                    throw PlatformCapabilities.CreateNativeLibraryUnavailableException(
+                        isZZZ ? DLL_NAME_ZZZ : DLL_NAME);
+                }
             }
-            else
+            finally
             {
-                DecompressTracks(dataAligned, dbAligned, ref decompressedClip);
+                Marshal.FreeHGlobal(dataPtr);
+                Marshal.FreeHGlobal(dbPtr);
             }
-
-            Marshal.FreeHGlobal(dataPtr);
-            Marshal.FreeHGlobal(dbPtr);
 
             values = new float[decompressedClip.ValuesCount];
             Marshal.Copy(decompressedClip.Values, values, 0, decompressedClip.ValuesCount);

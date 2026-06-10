@@ -11,17 +11,19 @@ namespace AnimeStudio.CLI
 {
     public class Program
     {
-        public static void Main(string[] args) => CommandLine.Init(args);
+        public static int Main(string[] args) => CommandLine.Init(args);
 
-        public static void Run(Options o)
+        public static int Run(Options o)
         {
             try
             {
                 var game = GameManager.GetGame(o.GameName);
 
                 // See https://github.com/Eleiyas/Z3-Asset-Map 
-                var paths = File.Exists("./Maps/Z3-AssetIndex-Eleiyas.json")
-                    ? JsonConvert.DeserializeObject<Dictionary<ulong, string>>(File.ReadAllText("./Maps/Z3-AssetIndex-Eleiyas.json"))
+                var mapsPath = Path.Combine(Environment.CurrentDirectory, "Maps");
+                var assetIndexPath = Path.Combine(mapsPath, "Z3-AssetIndex-Eleiyas.json");
+                var paths = File.Exists(assetIndexPath)
+                    ? JsonConvert.DeserializeObject<Dictionary<ulong, string>>(File.ReadAllText(assetIndexPath))
                     : new Dictionary<ulong, string>();
 
                 Studio.Paths = paths;
@@ -31,7 +33,7 @@ namespace AnimeStudio.CLI
                 {
                     Console.WriteLine("Invalid Game !!");
                     Console.WriteLine(GameManager.SupportedGames());
-                    return;
+                    return 1;
                 }
 
                 if (game is UnityCNGame unityCNGame)
@@ -47,7 +49,7 @@ namespace AnimeStudio.CLI
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
 
-                TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Settings.Default.types));
+                TypeFlags.SetTypes(Settings.Default.GetTypeFlags());
 
                 var classTypeFilter = Array.Empty<ClassIDType>();
                 if (!o.TypeFilter.IsNullOrEmpty())
@@ -182,26 +184,40 @@ namespace AnimeStudio.CLI
                     var fileList = new List<string>(toReadFile);
                     foreach (var file in fileList)
                     {
-                        assetsManager.LoadFiles(file);
-                        if (assetsManager.assetsFileList.Count > 0)
+                        try
                         {
-                            BuildAssetData(classTypeFilter, o.NameFilter, o.ContainerFilter, ref i);
-                            ExportAssets(o.Output.FullName, exportableAssets, o.GroupAssetsType, o.AssetExportType);
+                            assetsManager.LoadFiles(file);
+                            if (assetsManager.assetsFileList.Count > 0)
+                            {
+                                BuildAssetData(classTypeFilter, o.NameFilter, o.ContainerFilter, ref i);
+                                ExportAssets(o.Output.FullName, exportableAssets, o.GroupAssetsType, o.AssetExportType);
+                            }
                         }
-                        exportableAssets.Clear();
-                        assetsManager.Clear();
+                        catch (Exception e)
+                        {
+                            Logger.Error($"Failed to process \"{file}\": {e}");
+                        }
+                        finally
+                        {
+                            exportableAssets.Clear();
+                            assetsManager.Clear();
+                        }
                     }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
                 {
-                    File.WriteAllLines("./Maps/PathStrings_Sorted.txt", PathStrings.Distinct().OrderBy(p => p));
-                    File.WriteAllLines("./Maps/VOStrings_Sorted.txt", VOStrings.Distinct().OrderBy(p => p));
-                    File.WriteAllLines("./Maps/EventStrings_Sorted.txt", EventStrings.Distinct().OrderBy(p => p));
+                    Directory.CreateDirectory(mapsPath);
+                    File.WriteAllLines(Path.Combine(mapsPath, "PathStrings_Sorted.txt"), PathStrings.Distinct().OrderBy(p => p));
+                    File.WriteAllLines(Path.Combine(mapsPath, "VOStrings_Sorted.txt"), VOStrings.Distinct().OrderBy(p => p));
+                    File.WriteAllLines(Path.Combine(mapsPath, "EventStrings_Sorted.txt"), EventStrings.Distinct().OrderBy(p => p));
                 }
+
+                return 0;
             }
             catch (Exception e)
             {
-                Console.WriteLine(e);
+                Console.Error.WriteLine(e);
+                return 1;
             }
         }
     }

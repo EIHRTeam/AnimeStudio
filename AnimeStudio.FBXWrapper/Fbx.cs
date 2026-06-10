@@ -10,7 +10,7 @@ namespace AnimeStudio
 
         static Fbx()
         {
-            DllLoader.PreloadDll(FbxDll.DllName);
+            DllLoader.RegisterDllImportResolver(typeof(Fbx).Assembly);
         }
 
         public static Vector3 QuaternionToEuler(Quaternion q)

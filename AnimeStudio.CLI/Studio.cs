@@ -43,7 +43,8 @@ namespace AnimeStudio.CLI
             {
                 var file = files[i];
                 var fileOriPath = Path.GetDirectoryName(file);
-                var fileSavePath = fileOriPath.Replace(path, savePath);
+                var relativePath = Path.GetRelativePath(path, fileOriPath);
+                var fileSavePath = Path.Combine(savePath, relativePath);
                 extractedCount += ExtractFile(file, fileSavePath);
             }
             return extractedCount;
@@ -423,7 +424,6 @@ namespace AnimeStudio.CLI
                         exportPath = savePath;
                         break;
                 }
-                exportPath += Path.DirectorySeparatorChar;
                 Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
                 try
                 {

@@ -7,6 +7,11 @@ namespace AnimeStudio
     {
         public static void Process(this ACLClip m_ACLClip, Game game, out float[] values, out float[] times) 
         {
+            if (!PlatformCapabilities.TryGetAclAnimationDecompressionSupport(m_ACLClip, game, out var reason))
+            {
+                throw new PlatformNotSupportedException(reason);
+            }
+
             if (game.Type.IsSRGroup())
             {
                 var aclClip = m_ACLClip as MHYACLClip;

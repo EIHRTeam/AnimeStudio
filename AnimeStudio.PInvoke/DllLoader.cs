@@ -1,127 +1,107 @@
-﻿using System;
-using System.ComponentModel;
-using System.Diagnostics;
+using System;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace AnimeStudio.PInvoke
 {
     public static class DllLoader
     {
-        public static void PreloadDll(string dllName)
-        {
-            var dllDir = GetDirectedDllDirectory();
+        private static readonly ConcurrentDictionary<Assembly, byte> RegisteredAssemblies = new();
+        private static readonly ConcurrentDictionary<(Assembly Assembly, string LibraryName), bool> LibraryAvailability = new();
 
-            // Not using OperatingSystem.Platform.
-            // See: https://www.mono-project.com/docs/faq/technical/#how-to-detect-the-execution-platform
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        public static void RegisterDllImportResolver(Assembly assembly)
+        {
+            if (!RegisteredAssemblies.TryAdd(assembly, 0))
             {
-                Win32.LoadDll(dllDir, dllName);
+                return;
             }
-            else
+
+            NativeLibrary.SetDllImportResolver(assembly, ResolveLibrary);
+        }
+
+        public static bool IsLibraryAvailable(string libraryName, Assembly assembly)
+        {
+            return LibraryAvailability.GetOrAdd(
+                (assembly, libraryName),
+                static key => ProbeLibrary(key.LibraryName, key.Assembly));
+        }
+
+        private static bool ProbeLibrary(string libraryName, Assembly assembly)
+        {
+            IntPtr handle = IntPtr.Zero;
+            try
             {
-                Posix.LoadDll(dllDir, dllName);
+                handle = ResolveLibrary(libraryName, assembly, null);
+                return handle != IntPtr.Zero;
+            }
+            catch (Exception exception) when (
+                exception is DllNotFoundException or
+                BadImageFormatException or
+                PlatformNotSupportedException)
+            {
+                return false;
+            }
+            finally
+            {
+                if (handle != IntPtr.Zero)
+                {
+                    NativeLibrary.Free(handle);
+                }
             }
         }
 
-        private static string GetDirectedDllDirectory()
+        private static IntPtr ResolveLibrary(
+            string libraryName,
+            Assembly assembly,
+            DllImportSearchPath? searchPath)
         {
-            var localPath = Process.GetCurrentProcess().MainModule.FileName;
-            var localDir = Path.GetDirectoryName(localPath);
+            var fileName = GetPlatformFileName(libraryName);
 
-            var subDir = Environment.Is64BitProcess ? "x64" : "x86";
-
-            if (Path.Exists(Path.Combine(localDir, "bin")))
+            foreach (var directory in GetSearchDirectories(assembly))
             {
-                return Path.Combine(localDir, "bin", subDir);
-            } else
-            {
-                return Path.Combine(localDir, subDir);
-            }
-        }
-
-        private static partial class Win32
-        {
-
-            internal static void LoadDll(string dllDir, string dllName)
-            {
-                var dllFileName = $"{dllName}.dll";
-                var directedDllPath = Path.Combine(dllDir, dllFileName);
-
-                // Specify SEARCH_DLL_LOAD_DIR to load dependent libraries located in the same platform-specific directory.
-                var hLibrary = LoadLibraryEx(directedDllPath, IntPtr.Zero, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-
-                if (hLibrary == IntPtr.Zero)
+                var libraryPath = Path.Combine(directory, fileName);
+                if (NativeLibrary.TryLoad(libraryPath, out var handle))
                 {
-                    var errorCode = Marshal.GetLastWin32Error();
-                    var exception = new Win32Exception(errorCode);
-
-                    throw new DllNotFoundException(exception.Message, exception);
+                    return handle;
                 }
             }
 
-            // HMODULE LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
-            // HMODULE LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
-            [DllImport("kernel32.dll", SetLastError = true)]
-            private static extern IntPtr LoadLibraryEx(string lpLibFileName, IntPtr hFile, uint dwFlags);
-
-            private const uint LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x1000;
-            private const uint LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x100;
-
+            return IntPtr.Zero;
         }
 
-        private static class Posix
+        private static string GetPlatformFileName(string libraryName)
         {
-
-            internal static void LoadDll(string dllDir, string dllName)
+            if (OperatingSystem.IsWindows())
             {
-                string dllExtension;
-
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                {
-                    dllExtension = ".so";
-                }
-                else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-                {
-                    dllExtension = ".dylib";
-                }
-                else
-                {
-                    throw new NotSupportedException();
-                }
-
-                var dllFileName = $"lib{dllName}{dllExtension}";
-                var directedDllPath = Path.Combine(dllDir, dllFileName);
-
-                const int ldFlags = RTLD_NOW | RTLD_GLOBAL;
-                var hLibrary = DlOpen(directedDllPath, ldFlags);
-
-                if (hLibrary == IntPtr.Zero)
-                {
-                    var pErrStr = DlError();
-                    // `PtrToStringAnsi` always uses the specific constructor of `String` (see dotnet/core#2325),
-                    // which in turn interprets the byte sequence with system default codepage. On OSX and Linux
-                    // the codepage is UTF-8 so the error message should be handled correctly.
-                    var errorMessage = Marshal.PtrToStringAnsi(pErrStr);
-
-                    throw new DllNotFoundException(errorMessage);
-                }
+                return $"{libraryName}.dll";
             }
 
-            // OSX and most Linux OS use LP64 so `int` is still 32-bit even on 64-bit platforms.
-            // void *dlopen(const char *filename, int flag);
-            [DllImport("libdl", EntryPoint = "dlopen")]
-            private static extern IntPtr DlOpen([MarshalAs(UnmanagedType.LPStr)] string fileName, int flags);
+            if (OperatingSystem.IsLinux())
+            {
+                return $"lib{libraryName}.so";
+            }
 
-            // char *dlerror(void);
-            [DllImport("libdl", EntryPoint = "dlerror")]
-            private static extern IntPtr DlError();
+            if (OperatingSystem.IsMacOS())
+            {
+                return $"lib{libraryName}.dylib";
+            }
 
-            private const int RTLD_LAZY = 0x1;
-            private const int RTLD_NOW = 0x2;
-            private const int RTLD_GLOBAL = 0x100;
-
+            throw new PlatformNotSupportedException(
+                $"Native library loading is not configured for {RuntimeInformation.OSDescription}.");
         }
 
+        private static string[] GetSearchDirectories(Assembly assembly)
+        {
+            var assemblyDirectory = Path.GetDirectoryName(assembly.Location);
+            if (string.IsNullOrEmpty(assemblyDirectory) ||
+                string.Equals(assemblyDirectory, AppContext.BaseDirectory, StringComparison.Ordinal))
+            {
+                return [AppContext.BaseDirectory];
+            }
+
+            return [AppContext.BaseDirectory, assemblyDirectory];
+        }
     }
 }

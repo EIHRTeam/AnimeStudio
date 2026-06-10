@@ -1,4 +1,14 @@
 # Anime Studio
+
+This is a fork of the original Anime Studio, with a focus on improving support for Linux CI/CD environments.
+
+Please note that much of the work was AI-assisted. The project is intended to “just work,” rather than to be polished or highly optimized.
+
+Original README below.
+
+---
+
+# Anime Studio
 ## Asset extraction tool for unity games !
 
 ![image](https://github.com/user-attachments/assets/fc1decdc-a589-43a2-b965-2d8151d0975f)
