@@ -82,7 +82,7 @@ namespace AnimeStudio
                 }
                 return UnitySerializationLogic.WillUnitySerialize(fieldDefinition, TypeResolver);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return false;
             }

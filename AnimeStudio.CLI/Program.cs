@@ -91,7 +91,7 @@ namespace AnimeStudio.CLI
                         }
                         catch(Exception e)
                         {
-                            Logger.Error($"{typeStr} has invalid format, skipping...");
+                            Logger.Error($"{typeStr} has invalid format, skipping... ({e.Message})");
                             continue;
                         }
                     }
