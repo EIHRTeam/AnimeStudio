@@ -1,0 +1,194 @@
+name: CLI Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_or_version:
+        description: 'Release version or tag, for example 1.2.3 or v1.2.3'
+        required: true
+        type: string
+      confirm_fmod_redistribution:
+        description: 'I confirm that FMOD runtime redistribution is permitted for this release'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-release
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+
+    steps:
+      - name: Validate tag and version
+        id: metadata
+        shell: bash
+        env:
+          CONFIRM_FMOD_REDISTRIBUTION: ${{ inputs.confirm_fmod_redistribution }}
+          TAG_OR_VERSION: ${{ inputs.tag_or_version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${CONFIRM_FMOD_REDISTRIBUTION}" != "true" ]]; then
+            echo "::error::FMOD runtime redistribution must be confirmed before publishing."
+            exit 1
+          fi
+
+          value="$(
+            printf '%s' "${TAG_OR_VERSION}" |
+              sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+          )"
+
+          if [[ "${value}" == v* ]]; then
+            tag="${value}"
+            version="${value#v}"
+          else
+            tag="v${value}"
+            version="${value}"
+          fi
+
+          if [[ ! "${version}" =~ ^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::Use a version such as 1.2.3 or a tag such as v1.2.3."
+            exit 1
+          fi
+
+          git check-ref-format "refs/tags/${tag}"
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Release tag: ${tag}"
+          echo "Package version: ${version}"
+
+  build:
+    name: Build ${{ matrix.rid }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            architecture: x64
+            extension: zip
+          - rid: linux-x64
+            os: ubuntu-latest
+            architecture: x64
+            extension: tar.gz
+          - rid: osx-arm64
+            os: macos-15
+            architecture: arm64
+            extension: tar.gz
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          architecture: ${{ matrix.architecture }}
+
+      - name: Publish Windows CLI
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          ./scripts/publish-cli.ps1 `
+            -RuntimeIdentifier '${{ matrix.rid }}' `
+            -Version '${{ needs.metadata.outputs.version }}' `
+            -OutputDirectory artifacts
+
+      - name: Publish Unix CLI
+        if: matrix.rid != 'win-x64'
+        shell: bash
+        run: |
+          ./scripts/publish-cli.sh '${{ matrix.rid }}' \
+            --version '${{ needs.metadata.outputs.version }}' \
+            --output-dir artifacts
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.rid }}
+          path: artifacts/AnimeStudio.CLI-${{ needs.metadata.outputs.version }}-${{ matrix.rid }}.${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download release packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: cli-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum AnimeStudio.CLI-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Replace tag and publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release delete "${RELEASE_TAG}" --yes
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            git push origin ":refs/tags/${RELEASE_TAG}"
+          fi
+
+          git tag --delete "${RELEASE_TAG}" >/dev/null 2>&1 || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "${RELEASE_TAG}" "${GITHUB_SHA}" \
+            --message "AnimeStudio CLI ${RELEASE_TAG}"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
+          release_notes="$(
+            cat <<'EOF'
+          ## 运行要求 / Runtime requirement
+
+          > AnimeStudio CLI 是 framework-dependent 发布包，运行前必须安装
+          > [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)。
+          >
+          > AnimeStudio CLI is framework-dependent and requires the
+          > [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+          EOF
+          )"
+
+          gh release create "${RELEASE_TAG}" release-assets/* \
+            --verify-tag \
+            --title "AnimeStudio CLI ${RELEASE_TAG}" \
+            --notes "${release_notes}" \
+            --generate-notes
