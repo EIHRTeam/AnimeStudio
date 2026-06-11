@@ -1,0 +1,146 @@
+name: CLI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          architecture: x64
+
+      - name: Publish package
+        shell: pwsh
+        run: ./scripts/publish-cli.ps1 -RuntimeIdentifier win-x64 -OutputDirectory artifacts
+
+      - name: Extract package
+        shell: pwsh
+        run: |
+          $archive = Get-Item artifacts/AnimeStudio.CLI-*-win-x64.zip
+          Expand-Archive $archive.FullName artifacts/extracted/win-x64
+
+      - name: Run CLI smoke tests
+        shell: pwsh
+        run: |
+          & artifacts/extracted/win-x64/AnimeStudio.CLI.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project scripts/AnimeStudio.CLI.Smoke/AnimeStudio.CLI.Smoke.csproj `
+            --configuration Release `
+            -- artifacts/extracted/win-x64 win-x64
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio.CLI-win-x64
+          path: artifacts/AnimeStudio.CLI-*-win-x64.zip
+          if-no-files-found: error
+
+  linux-x64:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13
+
+    steps:
+      - name: Install container prerequisites
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            gzip \
+            libgcc-s1 \
+            libgssapi-krb5-2 \
+            libicu76 \
+            libssl3t64 \
+            libstdc++6 \
+            tar \
+            zlib1g
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v6
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          architecture: x64
+
+      - name: Verify runner
+        run: |
+          test "$(uname -m)" = "x86_64"
+          grep --fixed-strings 'VERSION_ID="13"' /etc/os-release
+
+      - name: Publish package
+        run: ./scripts/publish-cli.sh linux-x64 --output-dir artifacts
+
+      - name: Extract package
+        run: |
+          mkdir -p artifacts/extracted/linux-x64
+          tar -xzf artifacts/AnimeStudio.CLI-*-linux-x64.tar.gz \
+            -C artifacts/extracted/linux-x64
+
+      - name: Run CLI smoke tests
+        run: |
+          artifacts/extracted/linux-x64/AnimeStudio.CLI --help
+          dotnet run --project scripts/AnimeStudio.CLI.Smoke/AnimeStudio.CLI.Smoke.csproj \
+            --configuration Release \
+            -- artifacts/extracted/linux-x64 linux-x64
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio.CLI-linux-x64
+          path: artifacts/AnimeStudio.CLI-*-linux-x64.tar.gz
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          architecture: arm64
+
+      - name: Verify runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" = "15"
+
+      - name: Publish package
+        run: ./scripts/publish-cli.sh osx-arm64 --output-dir artifacts
+
+      - name: Extract package
+        run: |
+          mkdir -p artifacts/extracted/osx-arm64
+          tar -xzf artifacts/AnimeStudio.CLI-*-osx-arm64.tar.gz \
+            -C artifacts/extracted/osx-arm64
+
+      - name: Run CLI smoke tests
+        run: |
+          artifacts/extracted/osx-arm64/AnimeStudio.CLI --help
+          dotnet run --project scripts/AnimeStudio.CLI.Smoke/AnimeStudio.CLI.Smoke.csproj \
+            --configuration Release \
+            -- artifacts/extracted/osx-arm64 osx-arm64
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio.CLI-osx-arm64
+          path: artifacts/AnimeStudio.CLI-*-osx-arm64.tar.gz
+          if-no-files-found: error

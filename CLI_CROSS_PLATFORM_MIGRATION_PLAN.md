@@ -365,3 +365,96 @@ Progress`, `Completed`, or `Blocked`.
 - Do not commit the FBX SDK archive, extracted SDK directories, build outputs,
   or temporary smoke projects.
 - Do not modify or revert the concurrent `LICENSE` and `README.md` changes.
+
+## Phase 5: Build, Publish, and CI
+
+### Session: 2026-06-11
+
+**Phase Completion Status:** Completed
+
+#### Goal
+
+- Add Windows PowerShell and POSIX shell scripts that produce versioned,
+  framework-dependent CLI archives for `win-x64`, `linux-x64`, and
+  `osx-arm64`.
+- Separate the existing GUI/AppHost Patcher workflow from the new CLI publish
+  pipeline.
+- Add independent .NET 10 CI coverage for Windows x64, Debian 13 Linux x64,
+  and macOS 15 Apple Silicon.
+- Smoke-test each packaged CLI, verify RID-native asset isolation, and exercise
+  the Phase 4 native capability/degradation guards.
+
+#### Completed Changes
+
+- Added `scripts/publish-cli.ps1` and `scripts/publish-cli.sh`. Both read the
+  CLI version from MSBuild, run a framework-dependent `net10.0` RID publish,
+  stage the files outside the source tree, and create:
+  - `AnimeStudio.CLI-<version>-win-x64.zip`
+  - `AnimeStudio.CLI-<version>-linux-x64.tar.gz`
+  - `AnimeStudio.CLI-<version>-osx-arm64.tar.gz`
+- Added the repository `LICENSE` to CLI build and publish output alongside
+  `THIRD_PARTY_NOTICES.md`.
+- Changed `build.ps1` back to a GUI/Patcher-only build. It no longer tries to
+  build the CLI for the removed `net8.0-windows` and `net9.0-windows` targets
+  or mix the new CLI files into the patched GUI layout.
+- Kept the existing GUI workflow and updated its action/.NET setup versions so
+  it uses the pinned .NET 10 SDK while continuing to produce the net8/net9 GUI
+  artifacts.
+- Added an independent `.github/workflows/cli.yml` with Windows x64, Debian 13
+  x64 container, and macOS 15 ARM64 jobs. Each job publishes, extracts, runs
+  `--help`, performs package/native smoke checks, and uploads its archive.
+- Added a small framework-free CI smoke executable. It verifies legal/config
+  files, rejects foreign RID-native assets and `BinaryDecompiler.lib`, checks
+  Unix DXBC/ACL degradation and Metal/SPIR-V behavior, and loads Windows
+  ACL/HLSL libraries and entry points. The ACL `Dispose` entries are invoked
+  with an empty result structure, and the HLSL managed error path invokes the
+  native decompiler without accepting loader/architecture failures.
+- Corrected the Debian 13 container dependency list for Trixie, including the
+  `libssl3t64` package name.
+
+#### Verification Commands and Results
+
+- `scripts/publish-cli.sh osx-arm64`: passed on macOS 15.7 ARM64. The archive
+  was named `AnimeStudio.CLI-1.1.0-osx-arm64.tar.gz`; the packaged AppHost and
+  all three native libraries were ARM64 Mach-O files.
+- The extracted macOS CLI `--help` and CI smoke executable passed. DXBC emitted
+  the explicit macOS unsupported marker and hash, ACL returned
+  `PlatformNotSupportedException`, and Metal/SPIR-V avoided the DirectX
+  degradation path.
+- POSIX cross-publishes produced the expected `win-x64` zip and `linux-x64`
+  tarball. File inspection confirmed x86-64 PE and ELF AppHosts/native assets
+  with no foreign RID libraries or `BinaryDecompiler.lib`.
+- On the provided `1.14.226.195` Debian 13 x86_64 server with .NET `10.0.301`,
+  the Linux publish, archive extraction, `--help`, package layout checks, DXBC
+  degradation, ACL degradation, and Metal/SPIR-V smoke all passed.
+- A user-local extracted PowerShell 7.6.2 package on Debian executed
+  `publish-cli.ps1` successfully for both `linux-x64` and `win-x64`. The Linux
+  tarball ran `--help`; the Windows zip expanded with the expected x86-64 PE
+  AppHost and HLSL DLL.
+- CLI and smoke projects built successfully. GUI `net9.0-windows` and
+  `net8.0-windows` cross-builds and the Patcher net9 build passed. Existing
+  source warnings remain unchanged.
+- Both workflow files parsed as YAML, shell syntax checks passed, invalid
+  publish-script arguments returned exit code 2, and `git diff --check` passed.
+
+#### Unresolved Issues
+
+- No Windows execution host was available in this session. The Windows package
+  was cross-published and inspected, and both PowerShell packaging branches
+  ran, but ACL/HLSL native execution will first run in the new Windows CI job.
+- The new workflows have not run on GitHub until these changes are pushed.
+- Existing nullable, non-exhaustive switch, TODO, obsolete API, and unused
+  variable warnings remain outside this phase.
+
+#### Cautions for the Next Session
+
+- Phase 6 should reuse the package smoke executable only for archive/runtime
+  integration checks; parser, configuration, and synthetic asset coverage
+  still belongs in the planned MSTest project.
+- Keep CLI publishing independent from the AppHost-patched GUI output.
+- Do not remove the Debian 13 `libssl3t64` dependency or replace it with the
+  Debian 12 `libssl3` package name.
+- Review the first Windows CI run for the HLSL invalid-bytecode error path. It
+  must fail cleanly without `DllNotFoundException`,
+  `PlatformNotSupportedException`, `BadImageFormatException`, or a process
+  crash.

@@ -100,7 +100,7 @@ GUI 与 Patcher 暂不迁移。共享项目保留 `net8.0;net9.0`，新增 `net1
 
 ## 阶段 5：构建、发布与 CI
 
-**阶段完成状态：未开始**
+**阶段完成状态：已完成**
 
 - 提供 Windows PowerShell 和 POSIX shell 发布脚本。
 - 使用 `dotnet publish -f net10.0 -r <rid> --self-contained false`。
