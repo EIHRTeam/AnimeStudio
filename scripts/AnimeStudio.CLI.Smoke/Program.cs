@@ -15,6 +15,7 @@ var rid = args[1];
 try
 {
     VerifyPackageLayout(publishDirectory, rid);
+    VerifyFmodAudioConversion(publishDirectory, rid);
 
     if (rid == "win-x64")
     {
@@ -74,9 +75,11 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
                 "libAnimeStudio.FBXNative.so",
                 "libAnimeStudio.Ooz.so",
                 "libTexture2DDecoderNative.so",
+                "libfmod.so",
                 "libAnimeStudio.FBXNative.dylib",
                 "libAnimeStudio.Ooz.dylib",
                 "libTexture2DDecoderNative.dylib",
+                "libfmod.dylib",
             ];
             break;
         case "linux-x64":
@@ -85,6 +88,7 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
                 "libAnimeStudio.FBXNative.so",
                 "libAnimeStudio.Ooz.so",
                 "libTexture2DDecoderNative.so",
+                "libfmod.so",
             ];
             forbidden =
             [
@@ -100,6 +104,7 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
                 "libAnimeStudio.FBXNative.dylib",
                 "libAnimeStudio.Ooz.dylib",
                 "libTexture2DDecoderNative.dylib",
+                "libfmod.dylib",
             ];
             break;
         case "osx-arm64":
@@ -108,6 +113,7 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
                 "libAnimeStudio.FBXNative.dylib",
                 "libAnimeStudio.Ooz.dylib",
                 "libTexture2DDecoderNative.dylib",
+                "libfmod.dylib",
             ];
             forbidden =
             [
@@ -123,6 +129,7 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
                 "libAnimeStudio.FBXNative.so",
                 "libAnimeStudio.Ooz.so",
                 "libTexture2DDecoderNative.so",
+                "libfmod.so",
             ];
             break;
         default:
@@ -140,6 +147,174 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
     }
 }
 
+static void VerifyFmodAudioConversion(string publishDirectory, string rid)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var utilityAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.Utility.dll"));
+
+    var capabilitiesType = RequireType(utilityAssembly, "AnimeStudio.PlatformCapabilities");
+    var supportMethod = capabilitiesType.GetMethod(
+        "TryGetFmodAudioConversionSupport",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(
+            capabilitiesType.FullName,
+            "TryGetFmodAudioConversionSupport");
+    object?[] supportArguments = [null];
+    var supported = (bool)supportMethod.Invoke(null, supportArguments)!;
+    Assert(supported, $"FMOD capability failed: {supportArguments[0]}");
+
+    var factoryType = RequireType(utilityAssembly, "FMOD.Factory");
+    var resultType = RequireType(utilityAssembly, "FMOD.RESULT");
+    var outputType = RequireType(utilityAssembly, "FMOD.OUTPUTTYPE");
+    var initFlagsType = RequireType(utilityAssembly, "FMOD.INITFLAGS");
+    var modeType = RequireType(utilityAssembly, "FMOD.MODE");
+    var timeUnitType = RequireType(utilityAssembly, "FMOD.TIMEUNIT");
+    var exInfoType = RequireType(utilityAssembly, "FMOD.CREATESOUNDEXINFO");
+
+    object?[] createSystemArguments = [null];
+    AssertFmodOk(
+        factoryType.GetMethod("System_Create", BindingFlags.Public | BindingFlags.Static)!
+            .Invoke(null, createSystemArguments),
+        resultType,
+        "System_Create");
+    var system = createSystemArguments[0]
+        ?? throw new InvalidOperationException("FMOD returned a null system.");
+
+    try
+    {
+        AssertFmodOk(
+            Invoke(system, "setOutput", Enum.Parse(outputType, "NOSOUND")),
+            resultType,
+            "System_SetOutput");
+        AssertFmodOk(
+            Invoke(system, "init", 1, Enum.Parse(initFlagsType, "NORMAL"), IntPtr.Zero),
+            resultType,
+            "System_Init");
+
+        object?[] versionArguments = [null];
+        AssertFmodOk(
+            InvokeWithArguments(system, "getVersion", versionArguments),
+            resultType,
+            "System_GetVersion");
+        var version = (uint)versionArguments[0]!;
+        const uint expectedVersion = 0x00020314;
+        Assert(
+            version == expectedVersion,
+            $"FMOD runtime version is 0x{version:X8}; expected 0x{expectedVersion:X8} for {rid}.");
+
+        var wav = CreatePcmWave();
+        var exInfo = Activator.CreateInstance(exInfoType)!;
+        RequireField(exInfoType, "cbsize").SetValue(exInfo, Marshal.SizeOf(exInfoType));
+        RequireField(exInfoType, "length").SetValue(exInfo, (uint)wav.Length);
+
+        object?[] createSoundArguments =
+        [
+            wav,
+            Enum.Parse(modeType, "OPENMEMORY"),
+            exInfo,
+            null,
+        ];
+        AssertFmodOk(
+            InvokeWithArguments(system, "createSound", createSoundArguments),
+            resultType,
+            "System_CreateSound");
+        var sound = createSoundArguments[3]
+            ?? throw new InvalidOperationException("FMOD returned a null sound.");
+
+        try
+        {
+            object?[] formatArguments = [null, null, null, null];
+            AssertFmodOk(
+                InvokeWithArguments(sound, "getFormat", formatArguments),
+                resultType,
+                "Sound_GetFormat");
+            Assert((int)formatArguments[2]! == 1, "FMOD decoded an unexpected channel count.");
+            Assert((int)formatArguments[3]! == 16, "FMOD decoded an unexpected bit depth.");
+
+            object?[] lengthArguments = [null, Enum.Parse(timeUnitType, "PCMBYTES")];
+            AssertFmodOk(
+                InvokeWithArguments(sound, "getLength", lengthArguments),
+                resultType,
+                "Sound_GetLength");
+            var pcmLength = (uint)lengthArguments[0]!;
+            Assert(pcmLength == 160, $"FMOD decoded {pcmLength} PCM bytes instead of 160.");
+
+            object?[] lockArguments = [0u, pcmLength, null, null, null, null];
+            AssertFmodOk(
+                InvokeWithArguments(sound, "lock", lockArguments),
+                resultType,
+                "Sound_Lock");
+            var len1 = (uint)lockArguments[4]!;
+            var len2 = (uint)lockArguments[5]!;
+            Assert(len1 + len2 == pcmLength, "FMOD did not expose the complete PCM buffer.");
+            AssertFmodOk(
+                Invoke(
+                    sound,
+                    "unlock",
+                    (IntPtr)lockArguments[2]!,
+                    (IntPtr)lockArguments[3]!,
+                    len1,
+                    len2),
+                resultType,
+                "Sound_Unlock");
+        }
+        finally
+        {
+            Invoke(sound, "release");
+        }
+    }
+    finally
+    {
+        Invoke(system, "release");
+    }
+}
+
+static object? Invoke(object instance, string methodName, params object?[] arguments)
+{
+    return InvokeWithArguments(instance, methodName, arguments);
+}
+
+static object? InvokeWithArguments(object instance, string methodName, object?[] arguments)
+{
+    var method = instance.GetType().GetMethod(
+        methodName,
+        BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new MissingMethodException(instance.GetType().FullName, methodName);
+    return method.Invoke(instance, arguments);
+}
+
+static void AssertFmodOk(object? result, Type resultType, string operation)
+{
+    Assert(
+        Convert.ToInt32(result) == Convert.ToInt32(Enum.Parse(resultType, "OK")),
+        $"{operation} returned {result}.");
+}
+
+static byte[] CreatePcmWave()
+{
+    const int sampleRate = 8000;
+    const short channels = 1;
+    const short bits = 16;
+    const int samples = 80;
+    var pcmBytes = samples * channels * bits / 8;
+    var data = new byte[44 + pcmBytes];
+
+    "RIFF"u8.CopyTo(data);
+    BitConverter.GetBytes(data.Length - 8).CopyTo(data, 4);
+    "WAVEfmt "u8.CopyTo(data.AsSpan(8));
+    BitConverter.GetBytes(16).CopyTo(data, 16);
+    BitConverter.GetBytes((short)1).CopyTo(data, 20);
+    BitConverter.GetBytes(channels).CopyTo(data, 22);
+    BitConverter.GetBytes(sampleRate).CopyTo(data, 24);
+    BitConverter.GetBytes(sampleRate * channels * bits / 8).CopyTo(data, 28);
+    BitConverter.GetBytes((short)(channels * bits / 8)).CopyTo(data, 32);
+    BitConverter.GetBytes(bits).CopyTo(data, 34);
+    "data"u8.CopyTo(data.AsSpan(36));
+    BitConverter.GetBytes(pcmBytes).CopyTo(data, 40);
+    return data;
+}
+
 static void VerifyWindowsNativeLibraries(string publishDirectory)
 {
     Assert(OperatingSystem.IsWindows(), "win-x64 smoke must run on Windows.");
@@ -151,6 +326,13 @@ static void VerifyWindowsNativeLibraries(string publishDirectory)
         ["sracl.dll"] = ["DecompressAll", "Dispose"],
         ["acldb.dll"] = ["DecompressTracks", "Dispose"],
         ["acldb_zzz.dll"] = ["DecompressTracks", "Dispose"],
+        ["fmod.dll"] =
+        [
+            "FMOD5_System_Create",
+            "FMOD5_System_GetVersion",
+            "FMOD5_System_CreateSound",
+            "FMOD5_Sound_Lock",
+        ],
     };
 
     foreach (var (fileName, entryPoints) in exports)

@@ -14,6 +14,9 @@ namespace AnimeStudio
 
         public static bool SupportsDirectXShaderDecompilation => OperatingSystem.IsWindows();
 
+        public static bool SupportsFmodAudioConversion =>
+            TryGetFmodAudioConversionSupport(out _);
+
         public static bool TryGetAclAnimationDecompressionSupport(
             AnimationClip animationClip,
             Game game,
@@ -59,6 +62,16 @@ namespace AnimeStudio
             }
 
             return TryGetNativeLibrarySupport("HLSLDecompiler", out reason);
+        }
+
+        public static bool TryGetFmodAudioConversionSupport(out string reason)
+        {
+            return TryGetNativeLibrarySupport("fmod", out reason);
+        }
+
+        internal static void EnsureFmodAudioConversionAvailable()
+        {
+            EnsureNativeLibraryAvailable("fmod");
         }
 
         internal static void EnsureNativeLibraryAvailable(string libraryName)

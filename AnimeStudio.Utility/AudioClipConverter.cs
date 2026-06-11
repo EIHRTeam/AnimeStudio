@@ -19,37 +19,50 @@ namespace AnimeStudio
             var m_AudioData = m_AudioClip.m_AudioData.GetData();
             if (m_AudioData == null || m_AudioData.Length == 0)
                 return null;
+
+            PlatformCapabilities.EnsureFmodAudioConversionAvailable();
+
             var exinfo = new CREATESOUNDEXINFO();
             var result = Factory.System_Create(out var system);
             if (result != RESULT.OK)
                 return null;
-            result = system.init(1, INITFLAGS.NORMAL, IntPtr.Zero);
-            if (result != RESULT.OK)
-                return null;
-            exinfo.cbsize = Marshal.SizeOf(exinfo);
-            exinfo.length = (uint)m_AudioClip.m_Size;
-            result = system.createSound(m_AudioData, MODE.OPENMEMORY, ref exinfo, out var sound);
-            if (result != RESULT.OK)
-                return null;
-            result = sound.getNumSubSounds(out var numsubsounds);
-            if (result != RESULT.OK)
-                return null;
-            byte[] buff;
-            if (numsubsounds > 0)
+
+            Sound sound = null;
+            Sound subsound = null;
+            try
             {
-                result = sound.getSubSound(0, out var subsound);
+                result = system.setOutput(OUTPUTTYPE.NOSOUND);
                 if (result != RESULT.OK)
                     return null;
-                buff = SoundToWav(subsound);
-                subsound.release();
+
+                result = system.init(1, INITFLAGS.NORMAL, IntPtr.Zero);
+                if (result != RESULT.OK)
+                    return null;
+
+                exinfo.cbsize = Marshal.SizeOf(exinfo);
+                exinfo.length = (uint)m_AudioClip.m_Size;
+                result = system.createSound(m_AudioData, MODE.OPENMEMORY, ref exinfo, out sound);
+                if (result != RESULT.OK)
+                    return null;
+
+                result = sound.getNumSubSounds(out var numsubsounds);
+                if (result != RESULT.OK)
+                    return null;
+
+                if (numsubsounds <= 0)
+                {
+                    return SoundToWav(sound);
+                }
+
+                result = sound.getSubSound(0, out subsound);
+                return result == RESULT.OK ? SoundToWav(subsound) : null;
             }
-            else
+            finally
             {
-                buff = SoundToWav(sound);
+                subsound?.release();
+                sound?.release();
+                system.release();
             }
-            sound.release();
-            system.release();
-            return buff;
         }
 
         public byte[] SoundToWav(Sound sound)
@@ -67,22 +80,34 @@ namespace AnimeStudio
             result = sound.@lock(0, length, out var ptr1, out var ptr2, out var len1, out var len2);
             if (result != RESULT.OK)
                 return null;
-            byte[] buffer = new byte[len1 + 44];
-            //添加wav头
-            Encoding.UTF8.GetBytes("RIFF").CopyTo(buffer, 0);
-            BitConverter.GetBytes(len1 + 36).CopyTo(buffer, 4);
-            Encoding.UTF8.GetBytes("WAVEfmt ").CopyTo(buffer, 8);
-            BitConverter.GetBytes(16).CopyTo(buffer, 16);
-            BitConverter.GetBytes((short)1).CopyTo(buffer, 20);
-            BitConverter.GetBytes((short)channels).CopyTo(buffer, 22);
-            BitConverter.GetBytes(sampleRate).CopyTo(buffer, 24);
-            BitConverter.GetBytes(sampleRate * channels * bits / 8).CopyTo(buffer, 28);
-            BitConverter.GetBytes((short)(channels * bits / 8)).CopyTo(buffer, 32);
-            BitConverter.GetBytes((short)bits).CopyTo(buffer, 34);
-            Encoding.UTF8.GetBytes("data").CopyTo(buffer, 36);
-            BitConverter.GetBytes(len1).CopyTo(buffer, 40);
-            Marshal.Copy(ptr1, buffer, 44, (int)len1);
-            result = sound.unlock(ptr1, ptr2, len1, len2);
+
+            var pcmLength = checked((int)(len1 + len2));
+            var buffer = new byte[pcmLength + 44];
+            try
+            {
+                Encoding.UTF8.GetBytes("RIFF").CopyTo(buffer, 0);
+                BitConverter.GetBytes(pcmLength + 36).CopyTo(buffer, 4);
+                Encoding.UTF8.GetBytes("WAVEfmt ").CopyTo(buffer, 8);
+                BitConverter.GetBytes(16).CopyTo(buffer, 16);
+                BitConverter.GetBytes((short)1).CopyTo(buffer, 20);
+                BitConverter.GetBytes((short)channels).CopyTo(buffer, 22);
+                BitConverter.GetBytes(sampleRate).CopyTo(buffer, 24);
+                BitConverter.GetBytes(sampleRate * channels * bits / 8).CopyTo(buffer, 28);
+                BitConverter.GetBytes((short)(channels * bits / 8)).CopyTo(buffer, 32);
+                BitConverter.GetBytes((short)bits).CopyTo(buffer, 34);
+                Encoding.UTF8.GetBytes("data").CopyTo(buffer, 36);
+                BitConverter.GetBytes(pcmLength).CopyTo(buffer, 40);
+                Marshal.Copy(ptr1, buffer, 44, (int)len1);
+                if (len2 > 0)
+                {
+                    Marshal.Copy(ptr2, buffer, 44 + (int)len1, (int)len2);
+                }
+            }
+            finally
+            {
+                result = sound.unlock(ptr1, ptr2, len1, len2);
+            }
+
             if (result != RESULT.OK)
                 return null;
             return buffer;

@@ -5,10 +5,11 @@ copied to the application root only for the RID selected by `dotnet publish -r`.
 
 ## win-x64
 
-These binaries were moved without modification from the repository's previous
-`AnimeStudio.Libraries` x64 layout. Their original compiler and SDK build
-metadata are not available. FBXNative is retained as the existing Windows x64
-binary until it can be rebuilt on Windows from the new CMake project.
+Except for FMOD, these binaries were moved without modification from the
+repository's previous `AnimeStudio.Libraries` x64 layout. Their original
+compiler and SDK build metadata are not available. FBXNative is retained as the
+existing Windows x64 binary until it can be rebuilt on Windows from the new
+CMake project. FMOD comes from the FMOD 2.03.14 Windows Core API x64 SDK.
 
 | File | SHA256 |
 |---|---|
@@ -18,7 +19,7 @@ binary until it can be rebuilt on Windows from the new CMake project.
 | `acl.dll` | `2982fbcf80062c2ad20ea7bcc5b15b601de68e4eb9f71e11689c3d7694cfe9c9` |
 | `acldb.dll` | `fc89d4fc47303ce6980d7532e3c1e7d5a65f7ec9e45a54bd60a607cb2fb141e1` |
 | `acldb_zzz.dll` | `9780d0fb6890b295c12225c72fa959c185de838ef17eefb311b0c591cdbb181a` |
-| `fmod.dll` | `cad8c684b8f45573ffda50bfdb92208cade53d2a7ec9eb2bb2b7d2d575f9aaba` |
+| `fmod.dll` (FMOD 2.03.14) | `b07035752ed88be7a492c31fc45a7a33e935d003610677d2495beca0aca61514` |
 | `sracl.dll` | `1d08c848da0d3e4e1c0db2c69fa05e1132d2432a08e39785a2e8cf8bf35acbe3` |
 
 `link/win-x64/BinaryDecompiler.lib` is a link-time asset and is not published.
@@ -38,6 +39,7 @@ Its SHA256 is
 |---|---|
 | `libAnimeStudio.FBXNative.so` | `789fb1a776a3ecb79b624c7434fab2d5c94ce93a4ae9634a83b801d2639b533d` |
 | `libAnimeStudio.Ooz.so` | `ac769100e5b0313e5177902f94d0d42e8765047ce42a7dd6db643653811eb300` |
+| `libfmod.so` (FMOD 2.03.14) | `3ae8c9eca9a28ee5ec85b56b12d682ff6bbc20de5cd8f693c8eba8fe02dec3bc` |
 
 ## osx-arm64
 
@@ -52,6 +54,15 @@ Its SHA256 is
 |---|---|
 | `libAnimeStudio.FBXNative.dylib` | `971d68ad8d962553aeefbe5f4eeb586e29dccb36a2b608d78f5beb4810d6c741` |
 | `libAnimeStudio.Ooz.dylib` | `9eb5f47089d0a2cad9c9faa3965981e81fd09ae3de12c8fd6d946ae234cf70a1` |
+| `libfmod.dylib` (FMOD 2.03.14, universal x86_64/ARM64) | `b111ec81ad626808dfa5aafa348eb3a2d66104f8055773f6b15bea554ec3a02e` |
+
+## FMOD distribution status
+
+The FMOD 2.03.14 Windows, Linux, and macOS runtime files are present for local
+migration and CI validation. Do not publish packages containing these files
+until the project has confirmed that its FMOD license permits redistribution in
+an asset extraction tool. The SDK EULA permits runtime redistribution only in
+specified products and explicitly restricts distribution as part of a tool set.
 
 ## Rebuilding
 

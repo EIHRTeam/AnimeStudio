@@ -340,3 +340,11 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+
+# Temporary files
+tmp/
+
+# System Files
+.DS_Store
+Thumbs.db
+desktop.ini

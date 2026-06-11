@@ -1,6 +1,6 @@
 # Anime Studio
 
-This is a fork of the original Anime Studio, with a focus on improving support for Linux CI/CD environments.
+This is a fork of the original Anime Studio, with a focus on improving support for Linux CI/CD and macOS environments.
 
 Please note that much of the work was AI-assisted. The project is intended to “just work,” rather than to be polished or highly optimized.
 

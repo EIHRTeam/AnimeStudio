@@ -22,3 +22,12 @@ The Autodesk FBX SDK license requires the following notice:
 Autodesk and FBX are trademarks or registered trademarks of Autodesk, Inc., in
 the United States and/or other countries. AnimeStudio is independently developed
 and is not endorsed by Autodesk, Inc.
+
+## FMOD Engine
+
+This project can use FMOD Engine runtime libraries for audio decoding.
+
+FMOD Engine is copyright Firelight Technologies Pty Ltd. Use and redistribution
+are subject to the applicable FMOD license. The FMOD 2.03 runtime must not be
+included in public release packages until redistribution for this tool has been
+confirmed.
