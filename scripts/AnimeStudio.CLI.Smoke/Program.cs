@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Text.Json;
 
 if (args.Length != 2)
 {
@@ -15,6 +16,10 @@ var rid = args[1];
 try
 {
     VerifyPackageLayout(publishDirectory, rid);
+    VerifyRuntimeConfiguration(publishDirectory);
+    VerifyExplicitTypeFilter(publishDirectory);
+    VerifyScrapeChunkMerge(publishDirectory);
+    VerifyAclResultValidation(publishDirectory);
     VerifyFmodAudioConversion(publishDirectory, rid);
 
     if (rid == "win-x64")
@@ -34,6 +39,178 @@ catch (Exception exception)
 {
     Console.Error.WriteLine(exception);
     return 1;
+}
+
+static void VerifyRuntimeConfiguration(string publishDirectory)
+{
+    var runtimeConfigPath = Path.Combine(
+        publishDirectory,
+        "AnimeStudio.CLI.runtimeconfig.json");
+    Assert(File.Exists(runtimeConfigPath), "CLI runtime configuration is missing.");
+
+    using var document = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
+    var properties = document.RootElement
+        .GetProperty("runtimeOptions")
+        .GetProperty("configProperties");
+
+    Assert(!properties.GetProperty("System.GC.Server").GetBoolean(), "Server GC must remain disabled.");
+    Assert(properties.GetProperty("System.GC.Concurrent").GetBoolean(), "Concurrent GC must remain enabled.");
+    Assert(
+        properties.GetProperty("System.GC.HeapHardLimitPercent").GetInt32() == 75,
+        "GC heap hard limit must be 75 percent.");
+    Assert(properties.GetProperty("System.GC.RetainVM").GetBoolean(), "GC RetainVM must remain enabled.");
+}
+
+static void VerifyExplicitTypeFilter(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var coreAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.dll"));
+    var programType = RequireType(cliAssembly, "AnimeStudio.CLI.Program");
+    var mainMethod = programType.GetMethod(
+        "Main",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(programType.FullName, "Main");
+    var classIdType = RequireType(coreAssembly, "AnimeStudio.ClassIDType");
+    var typeFlagsType = RequireType(coreAssembly, "AnimeStudio.TypeFlags");
+    var canParseMethod = typeFlagsType.GetMethod(
+        "CanParse",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(typeFlagsType.FullName, "CanParse");
+    var animatorController = Enum.Parse(classIdType, "AnimatorController");
+    var mesh = Enum.Parse(classIdType, "Mesh");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-cli-types-smoke-{Guid.NewGuid():N}");
+    var inputDirectory = Path.Combine(temporaryDirectory, "input");
+    var outputDirectory = Path.Combine(temporaryDirectory, "output");
+
+    try
+    {
+        Directory.CreateDirectory(inputDirectory);
+        File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+        var exitCode = (int)mainMethod.Invoke(
+            null,
+            [
+                new[]
+                {
+                    inputDirectory,
+                    outputDirectory,
+                    "--game",
+                    "ArknightsEndfield",
+                    "--types",
+                    "AnimatorController:Both",
+                    "--group_assets",
+                    "ByType",
+                }
+            ])!;
+
+        Assert(exitCode == 0, $"CLI type-filter smoke returned exit code {exitCode}.");
+        Assert(
+            (bool)canParseMethod.Invoke(null, [animatorController])!,
+            "Explicit AnimatorController type was not enabled.");
+        Assert(
+            !(bool)canParseMethod.Invoke(null, [mesh])!,
+            "Explicit type filters must disable unrequested default types.");
+    }
+    finally
+    {
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyScrapeChunkMerge(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var studioType = RequireType(cliAssembly, "AnimeStudio.CLI.Studio");
+    var resetMethod = studioType.GetMethod(
+        "ResetScrapedStrings",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(studioType.FullName, "ResetScrapedStrings");
+    var flushMethod = studioType.GetMethod(
+        "FlushScrapedStrings",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(studioType.FullName, "FlushScrapedStrings");
+    var completeMethod = studioType.GetMethod(
+        "CompleteScrapedStrings",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(studioType.FullName, "CompleteScrapedStrings");
+    var pathStrings = studioType.GetProperty(
+        "PathStrings",
+        BindingFlags.Public | BindingFlags.Static)
+        ?.GetValue(null)
+        ?? throw new MissingMemberException(studioType.FullName, "PathStrings");
+    var addMethod = pathStrings.GetType().GetMethod("Add")
+        ?? throw new MissingMethodException(pathStrings.GetType().FullName, "Add");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-cli-smoke-{Guid.NewGuid():N}");
+
+    try
+    {
+        resetMethod.Invoke(null, [temporaryDirectory]);
+        addMethod.Invoke(pathStrings, ["zeta"]);
+        addMethod.Invoke(pathStrings, ["alpha"]);
+        flushMethod.Invoke(null, [temporaryDirectory]);
+
+        addMethod.Invoke(pathStrings, ["beta"]);
+        addMethod.Invoke(pathStrings, ["alpha"]);
+        flushMethod.Invoke(null, [temporaryDirectory]);
+        completeMethod.Invoke(null, [temporaryDirectory]);
+
+        Assert(
+            File.ReadAllLines(Path.Combine(temporaryDirectory, "PathStrings_Sorted.txt"))
+                .SequenceEqual(["alpha", "beta", "zeta"]),
+            "Scraped path strings were not globally sorted and de-duplicated.");
+        Assert(
+            File.ReadAllLines(Path.Combine(temporaryDirectory, "VOStrings_Sorted.txt")).Length == 0,
+            "Empty scraped VO output is not empty.");
+        Assert(
+            !Directory.Exists(Path.Combine(temporaryDirectory, ".animestudio-scrape")),
+            "Scrape chunk directory was not cleaned up.");
+    }
+    finally
+    {
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyAclResultValidation(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var utilityAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.Utility.dll"));
+    var clipType = RequireType(utilityAssembly, "ACLLibs.DecompressedClip");
+    var resultType = RequireType(utilityAssembly, "ACLLibs.DecompressedClipResult");
+    var copyMethod = resultType.GetMethod(
+        "Copy",
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new MissingMethodException(resultType.FullName, "Copy");
+    var clip = Activator.CreateInstance(clipType)!;
+    RequireField(clipType, "ValuesCount").SetValue(clip, -1);
+    object?[] arguments = [clip, null, null];
+
+    try
+    {
+        copyMethod.Invoke(null, arguments);
+        throw new InvalidOperationException("ACL result validation accepted a negative element count.");
+    }
+    catch (TargetInvocationException exception)
+    {
+        Assert(
+            exception.InnerException is InvalidDataException,
+            $"ACL result validation returned {exception.InnerException?.GetType().Name}.");
+    }
 }
 
 static void VerifyPackageLayout(string publishDirectory, string rid)
