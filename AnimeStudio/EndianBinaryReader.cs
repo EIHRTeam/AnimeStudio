@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
@@ -26,7 +25,7 @@ namespace AnimeStudio
         }
 
         public long Length => BaseStream.Length;
-        public long Remaining => Length - Position;
+        public virtual long Remaining => Length - Position;
 
         public override short ReadInt16()
         {
@@ -111,54 +110,57 @@ namespace AnimeStudio
         }
         public override byte[] ReadBytes(int count)
         {
+            ValidateLength(count, 1, "byte sequence");
             if (count == 0)
             {
                 return Array.Empty<byte>();
             }
 
-            var buffer = ArrayPool<byte>.Shared.Rent(0x1000);
-            List<byte> result = new List<byte>(count);
-            do
+            var result = GC.AllocateUninitializedArray<byte>(count);
+            var offset = 0;
+            while (offset < result.Length)
             {
-                var readNum = Math.Min(count, buffer.Length);
-                int n = Read(buffer, 0, readNum);
-                if (n == 0)
+                var read = Read(result, offset, result.Length - offset);
+                if (read == 0)
                 {
-                    break;
+                    throw new EndOfStreamException("Unable to read the requested number of bytes.");
                 }
-
-                result.AddRange(buffer[..n]);
-                count -= n;
-            } while (count > 0);
-
-            ArrayPool<byte>.Shared.Return(buffer);
-            return result.ToArray();
+                offset += read;
+            }
+            return result;
         }
 
-        public void AlignStream()
+        public virtual void AlignStream()
         {
             AlignStream(4);
         }
 
-        public void AlignStream(int alignment)
+        public virtual void AlignStream(int alignment)
         {
+            if (alignment <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(alignment), alignment, "Alignment must be positive.");
+            }
+
             var pos = Position;
             var mod = pos % alignment;
             if (mod != 0)
             {
-                Position += alignment - mod;
+                var skip = alignment - mod;
+                if (skip > Remaining)
+                {
+                    throw new EndOfStreamException("Unable to align beyond the end of the stream.");
+                }
+                Position += skip;
             }
         }
 
         public string ReadAlignedString()
         {
-            var result = "";
             var length = ReadInt32();
-            if (length > 0 && length <= Remaining)
-            {
-                var stringData = ReadBytes(length);
-                result = Encoding.UTF8.GetString(stringData);
-            }
+            ValidateLength(length, 1, "aligned string");
+            var stringData = ReadBytes(length);
+            var result = Encoding.UTF8.GetString(stringData);
             AlignStream();
             return result;
         }
@@ -230,25 +232,41 @@ namespace AnimeStudio
             return str;
         }
 
-        internal T[] ReadArray<T>(Func<T> del, int length)
+        public int ReadArrayLength(int minimumElementSize = 1, string fieldName = "array")
         {
-            if (length < 0x1000)
+            var length = ReadInt32();
+            ValidateLength(length, minimumElementSize, fieldName);
+            return length;
+        }
+
+        internal T[] ReadArray<T>(Func<T> del, int length, int minimumElementSize = 1)
+        {
+            ValidateLength(length, minimumElementSize, "array");
+            var array = new T[length];
+            for (int i = 0; i < length; i++)
             {
-                var array = new T[length];
-                for (int i = 0; i < length; i++)
-                {
-                    array[i] = del();
-                }
-                return array;
+                array[i] = del();
             }
-            else
+            return array;
+        }
+
+        private void ValidateLength(int length, int minimumElementSize, string fieldName)
+        {
+            if (length < 0)
             {
-                var list = new List<T>();
-                for (int i = 0; i < length; i++)
-                {
-                    list.Add(del());
-                }
-                return list.ToArray();
+                throw new InvalidDataException($"Invalid negative {fieldName} length: {length}.");
+            }
+            if (minimumElementSize <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(minimumElementSize),
+                    minimumElementSize,
+                    "Minimum element size must be positive.");
+            }
+            if (length > Remaining / minimumElementSize)
+            {
+                throw new EndOfStreamException(
+                    $"{fieldName} length {length} exceeds the remaining {Remaining} bytes.");
             }
         }
 
@@ -256,16 +274,16 @@ namespace AnimeStudio
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(1, "Boolean array");
             }
-            return ReadArray(ReadBoolean, length);
+            return ReadArray(ReadBoolean, length, 1);
         }
 
         public byte[] ReadUInt8Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(1, "byte array");
             }
             return ReadBytes(length);
         }
@@ -274,99 +292,99 @@ namespace AnimeStudio
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(short), "Int16 array");
             }
-            return ReadArray(ReadInt16, length);
+            return ReadArray(ReadInt16, length, sizeof(short));
         }
 
         public ushort[] ReadUInt16Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(ushort), "UInt16 array");
             }
-            return ReadArray(ReadUInt16, length);
+            return ReadArray(ReadUInt16, length, sizeof(ushort));
         }
 
         public int[] ReadInt32Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(int), "Int32 array");
             }
-            return ReadArray(ReadInt32, length);
+            return ReadArray(ReadInt32, length, sizeof(int));
         }
 
         public uint[] ReadUInt32Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(uint), "UInt32 array");
             }
-            return ReadArray(ReadUInt32, length);
+            return ReadArray(ReadUInt32, length, sizeof(uint));
         }
 
         public ulong[] ReadUInt64Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(ulong), "UInt64 array");
             }
-            return ReadArray(ReadUInt64, length);
+            return ReadArray(ReadUInt64, length, sizeof(ulong));
         }
 
         public uint[][] ReadUInt32ArrayArray(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(int), "nested UInt32 array");
             }
-            return ReadArray(() => ReadUInt32Array(), length);
+            return ReadArray(() => ReadUInt32Array(), length, sizeof(int));
         }
 
         public float[] ReadSingleArray(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(float), "Single array");
             }
-            return ReadArray(ReadSingle, length);
+            return ReadArray(ReadSingle, length, sizeof(float));
         }
 
         public string[] ReadStringArray(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(int), "string array");
             }
-            return ReadArray(ReadAlignedString, length);
+            return ReadArray(ReadAlignedString, length, sizeof(int));
         }
 
         public Vector2[] ReadVector2Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(float) * 2, "Vector2 array");
             }
-            return ReadArray(ReadVector2, length);
+            return ReadArray(ReadVector2, length, sizeof(float) * 2);
         }
 
         public Vector4[] ReadVector4Array(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(float) * 4, "Vector4 array");
             }
-            return ReadArray(ReadVector4, length);
+            return ReadArray(ReadVector4, length, sizeof(float) * 4);
         }
 
         public Matrix4x4[] ReadMatrixArray(int length = -1)
         {
             if (length == -1)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(sizeof(float) * 16, "Matrix4x4 array");
             }
-            return ReadArray(ReadMatrix, length);
+            return ReadArray(ReadMatrix, length, sizeof(float) * 16);
         }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -42,7 +43,9 @@ namespace AnimeStudio
 
         public SkeletonMask(ObjectReader reader)
         {
-            int numElements = reader.ReadInt32();
+            int numElements = reader.ReadArrayLength(
+                sizeof(uint) + sizeof(float),
+                "SkeletonMask elements");
             m_Data = new List<SkeletonMaskElement>();
             for (int i = 0; i < numElements; i++)
             {
@@ -153,7 +156,9 @@ namespace AnimeStudio
         {
             var version = reader.version;
 
-            int numConditions = reader.ReadInt32();
+            int numConditions = reader.ReadArrayLength(
+                sizeof(uint) * 2 + sizeof(float) * 2,
+                "Transition conditions");
             m_ConditionConstantArray = new List<ConditionConstant>();
             for (int i = 0; i < numConditions; i++)
             {
@@ -162,7 +167,9 @@ namespace AnimeStudio
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var numTransitionBlockParam = reader.ReadInt32();
+                var numTransitionBlockParam = reader.ReadArrayLength(
+                    sizeof(int) + sizeof(float),
+                    "Transition block parameters");
                 var m_TransitionBlockParamConstantArray = new List<TransitionBlockParamConstant>();
                 for (int i = 0; i < numTransitionBlockParam; i++)
                 {
@@ -269,7 +276,9 @@ namespace AnimeStudio
             m_ChildPairVectorArray = reader.ReadVector2Array();
             m_ChildPairAvgMagInvArray = reader.ReadSingleArray();
 
-            int numNeighbours = reader.ReadInt32();
+            int numNeighbours = reader.ReadArrayLength(
+                sizeof(int),
+                "Blend2D neighbor lists");
             m_ChildNeighborListArray = new List<MotionNeighborList>();
             for (int i = 0; i < numNeighbours; i++)
             {
@@ -338,14 +347,18 @@ namespace AnimeStudio
             m_BlendingMode = reader.ReadUInt8Array();
             reader.AlignStream();
 
-            var numChildBodyMasks = reader.ReadInt32();
+            var numChildBodyMasks = reader.ReadArrayLength(
+                sizeof(uint) * 3,
+                "Blend sequence child body masks");
             m_ChildBodyMask = new HumanPoseMask[numChildBodyMasks];
             for (int i = 0; i < numChildBodyMasks; i++)
             {
                 m_ChildBodyMask[i] = new HumanPoseMask(reader);
             }
 
-            var numChildSkeletonMasks = reader.ReadInt32();
+            var numChildSkeletonMasks = reader.ReadArrayLength(
+                sizeof(int),
+                "Blend sequence child skeleton masks");
             m_ChildSkeletonMask = new SkeletonMask[numChildSkeletonMasks];
             for (int i = 0; i < numChildSkeletonMasks; i++)
             {
@@ -453,7 +466,9 @@ namespace AnimeStudio
 
             if (reader.Game.Type.IsGI() && HasTriangles(reader.serializedType))
             {
-                int trianglesCount = reader.ReadInt32();
+                int trianglesCount = reader.ReadArrayLength(
+                    sizeof(int) * 24,
+                    "Blend tree triangles");
                 m_Triangles = new List<BlendTreeTriangle>();
                 for (int i = 0; i < trianglesCount; i++)
                 {
@@ -498,7 +513,7 @@ namespace AnimeStudio
         {
             var version = reader.version;
 
-            int numNodes = reader.ReadInt32();
+            int numNodes = reader.ReadArrayLength(1, "Blend tree nodes");
             m_NodeArray = new List<BlendTreeNodeConstant>();
             for (int i = 0; i < numNodes; i++)
             {
@@ -539,7 +554,7 @@ namespace AnimeStudio
         {
             var version = reader.version;
 
-            int numTransistions = reader.ReadInt32();
+            int numTransistions = reader.ReadArrayLength(1, "State transitions");
             m_TransitionConstantArray = new List<TransitionConstant>();
             for (int i = 0; i < numTransistions; i++)
             {
@@ -550,7 +565,9 @@ namespace AnimeStudio
 
             if (version[0] < 5 || (version[0] == 5 && version[1] < 2)) //5.2 down
             {
-                int numInfos = reader.ReadInt32();
+                int numInfos = reader.ReadArrayLength(
+                    sizeof(int) + sizeof(uint),
+                    "State leaf info");
                 m_LeafInfoArray = new List<LeafInfoConstant>();
                 for (int i = 0; i < numInfos; i++)
                 {
@@ -558,7 +575,9 @@ namespace AnimeStudio
                 }
             }
 
-            int numBlends = reader.ReadInt32();
+            int numBlends = reader.ReadArrayLength(
+                sizeof(int),
+                "State blend trees");
             m_BlendTreeConstantArray = new List<BlendTreeConstant>();
             for (int i = 0; i < numBlends; i++)
             {
@@ -618,7 +637,9 @@ namespace AnimeStudio
             {
                 var m_CullingMode = reader.ReadUInt32();
                 reader.AlignStream();
-                var numStateParameterConstant = reader.ReadInt32();
+                var numStateParameterConstant = reader.ReadArrayLength(
+                    sizeof(int) + sizeof(float),
+                    "State parameters");
                 var m_StateParameterConstantArray = new StateParameterConstant[numStateParameterConstant];
                 for (int i = 0; i < numStateParameterConstant; i++)
                 {
@@ -651,7 +672,9 @@ namespace AnimeStudio
         {
             m_Destination = reader.ReadUInt32();
 
-            int numConditions = reader.ReadInt32();
+            int numConditions = reader.ReadArrayLength(
+                sizeof(uint) * 2 + sizeof(float) * 2,
+                "Selector transition conditions");
             m_ConditionConstantArray = new List<ConditionConstant>();
             for (int i = 0; i < numConditions; i++)
             {
@@ -660,7 +683,9 @@ namespace AnimeStudio
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var numTransitionBlockParam = reader.ReadInt32();
+                var numTransitionBlockParam = reader.ReadArrayLength(
+                    sizeof(int) + sizeof(float),
+                    "Selector transition block parameters");
                 var m_TransitionBlockParamConstantArray = new List<TransitionBlockParamConstant>();
                 for (int i = 0; i < numTransitionBlockParam; i++)
                 {
@@ -678,7 +703,9 @@ namespace AnimeStudio
 
         public SelectorStateConstant(ObjectReader reader)
         {
-            int numTransitions = reader.ReadInt32();
+            int numTransitions = reader.ReadArrayLength(
+                sizeof(uint) + sizeof(int),
+                "Selector state transitions");
             m_TransitionConstantArray = new List<SelectorTransitionConstant>();
             for (int i = 0; i < numTransitions; i++)
             {
@@ -703,14 +730,14 @@ namespace AnimeStudio
         {
             var version = reader.version;
 
-            int numStates = reader.ReadInt32();
+            int numStates = reader.ReadArrayLength(1, "State machine states");
             m_StateConstantArray = new List<StateConstant>();
             for (int i = 0; i < numStates; i++)
             {
                 m_StateConstantArray.Add(new StateConstant(reader));
             }
 
-            int numAnyStates = reader.ReadInt32();
+            int numAnyStates = reader.ReadArrayLength(1, "Any-state transitions");
             m_AnyStateTransitionConstantArray = new List<TransitionConstant>();
             for (int i = 0; i < numAnyStates; i++)
             {
@@ -719,7 +746,9 @@ namespace AnimeStudio
 
             if (version[0] >= 5) //5.0 and up
             {
-                int numSelectors = reader.ReadInt32();
+                int numSelectors = reader.ReadArrayLength(
+                    sizeof(int) + sizeof(uint) + sizeof(bool),
+                    "State machine selectors");
                 m_SelectorStateConstantArray = new List<SelectorStateConstant>();
                 for (int i = 0; i < numSelectors; i++)
                 {
@@ -792,14 +821,14 @@ namespace AnimeStudio
 
         public ControllerConstant(ObjectReader reader)
         {
-            int numLayers = reader.ReadInt32();
+            int numLayers = reader.ReadArrayLength(1, "Controller layers");
             m_LayerArray = new List<LayerConstant>();
             for (int i = 0; i < numLayers; i++)
             {
                 m_LayerArray.Add(new LayerConstant(reader));
             }
 
-            int numStates = reader.ReadInt32();
+            int numStates = reader.ReadArrayLength(1, "Controller state machines");
             m_StateMachineArray = new List<StateMachineConstant>();
             for (int i = 0; i < numStates; i++)
             {
@@ -825,7 +854,9 @@ namespace AnimeStudio
         {
             m_Mask = reader.ReadUInt32Array();
 
-            var curveNamesCount = reader.ReadInt32();
+            var curveNamesCount = reader.ReadArrayLength(
+                sizeof(int),
+                "Animation curve mask names");
             m_CurveNames = new List<string>(curveNamesCount);
             for (int i = 0; i < curveNamesCount; i++)
             {
@@ -833,7 +864,9 @@ namespace AnimeStudio
             }
             reader.AlignStream();
 
-            var genericBindingsCount = reader.ReadInt32();
+            var genericBindingsCount = reader.ReadArrayLength(
+                1,
+                "Animation curve mask generic bindings");
             m_GenericBindings = new GenericBinding[genericBindingsCount];
             reader.AlignStream();
         }
@@ -842,23 +875,53 @@ namespace AnimeStudio
     public sealed class AnimatorController : RuntimeAnimatorController
     {
         public Dictionary<uint, string> m_TOS;
+        public List<string> m_TOSData;
         public List<PPtr<AnimationClip>> m_AnimationClips;
 
         public AnimatorController(ObjectReader reader) : base(reader)
         {
             var m_ControllerSize = reader.ReadUInt32();
+            var controllerStart = reader.Position;
             var m_Controller = new ControllerConstant(reader);
-
-            int tosSize = reader.ReadInt32();
-            m_TOS = new Dictionary<uint, string>();
-            for (int i = 0; i < tosSize; i++)
+            var controllerBytesRead = reader.Position - controllerStart;
+            if ((reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
+                && controllerBytesRead > m_ControllerSize)
             {
-                m_TOS.Add(reader.ReadUInt32(), reader.ReadAlignedString());
+                throw new InvalidDataException(
+                    $"AnimatorController {reader.m_PathID} serialized controller data exceeds its declared size: " +
+                    $"declared {m_ControllerSize} bytes, read {controllerBytesRead} bytes.");
+            }
+
+            m_TOS = new Dictionary<uint, string>();
+            m_TOSData = new List<string>();
+            if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
+            {
+                var tosSize = reader.ReadArrayLength(sizeof(int), "AnimatorController TOSData");
+                m_TOSData.Capacity = tosSize;
+                for (int i = 0; i < tosSize; i++)
+                {
+                    m_TOSData.Add(reader.ReadAlignedString());
+                }
+            }
+            else
+            {
+                var tosSize = reader.ReadArrayLength(
+                    sizeof(uint) + sizeof(int),
+                    "AnimatorController TOS map");
+                m_TOS.EnsureCapacity(tosSize);
+                for (int i = 0; i < tosSize; i++)
+                {
+                    m_TOS.Add(reader.ReadUInt32(), reader.ReadAlignedString());
+                }
             }
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                int animationCurveMaskSize = reader.ReadInt32();
+                int animationCurveMaskSize = reader.ReadArrayLength(
+                    reader.m_Version < SerializedFileFormatVersion.Unknown_14
+                        ? sizeof(int) * 2
+                        : sizeof(int) + sizeof(long),
+                    "AnimatorController animation curve mask");
                 var m_AnimationCurveMask = new PPtr<HGAnimationCurveMask>[animationCurveMaskSize];
                 for (int i = 0; i < animationCurveMaskSize; i++)
                 {
@@ -866,8 +929,12 @@ namespace AnimeStudio
                 }
             }
 
-            int numClips = reader.ReadInt32();
-            m_AnimationClips = new List<PPtr<AnimationClip>>();
+            int numClips = reader.ReadArrayLength(
+                reader.m_Version < SerializedFileFormatVersion.Unknown_14
+                    ? sizeof(int) * 2
+                    : sizeof(int) + sizeof(long),
+                "AnimatorController animation clips");
+            m_AnimationClips = new List<PPtr<AnimationClip>>(numClips);
             for (int i = 0; i < numClips; i++)
             {
                 m_AnimationClips.Add(new PPtr<AnimationClip>(reader));

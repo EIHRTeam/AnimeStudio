@@ -17,6 +17,7 @@ namespace AnimeStudio
 
         public int[] version => assetsFile.version;
         public BuildType buildType => assetsFile.buildType;
+        public override long Remaining => byteStart + byteSize - Position;
 
         public ObjectReader(EndianBinaryReader reader, SerializedFile assetsFile, ObjectInfo objectInfo, Game game) : base(reader.BaseStream, reader.Endian)
         {
@@ -44,11 +45,27 @@ namespace AnimeStudio
         public override int Read(byte[] buffer, int index, int count)
         {
             var pos = Position - byteStart;
-            if (pos + count > byteSize)
+            if (pos < 0 || count < 0 || pos > byteSize - count)
             {
                 throw new EndOfStreamException("Unable to read beyond the end of the stream.");
             }
             return base.Read(buffer, index, count);
+        }
+
+        public override void AlignStream(int alignment)
+        {
+            if (alignment <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(alignment), alignment, "Alignment must be positive.");
+            }
+
+            var mod = Position % alignment;
+            var skip = mod == 0 ? 0 : alignment - mod;
+            if (skip > Remaining)
+            {
+                throw new EndOfStreamException("Unable to align beyond the end of the object.");
+            }
+            Position += skip;
         }
 
         public void Reset()
@@ -96,14 +113,27 @@ namespace AnimeStudio
         {
             if (length == 0)
             {
-                length = ReadInt32();
+                length = ReadArrayLength(
+                    version[0] > 5 || (version[0] == 5 && version[1] >= 4)
+                        ? sizeof(float) * 3
+                        : sizeof(float) * 4,
+                    "Vector3 array");
             }
-            return ReadArray(ReadVector3, length);
+            var elementSize = version[0] > 5 || (version[0] == 5 && version[1] >= 4)
+                ? sizeof(float) * 3
+                : sizeof(float) * 4;
+            return ReadArray(ReadVector3, length, elementSize);
         }
 
         public XForm[] ReadXFormArray()
         {
-            return ReadArray(ReadXForm, ReadInt32());
+            var elementSize = version[0] > 5 || (version[0] == 5 && version[1] >= 4)
+                ? sizeof(float) * 10
+                : sizeof(float) * 12;
+            return ReadArray(
+                ReadXForm,
+                ReadArrayLength(elementSize, "XForm array"),
+                elementSize);
         }
     }
 }
