@@ -71,7 +71,9 @@ namespace AnimeStudio
 
         public Skeleton(ObjectReader reader, bool isZZZ = false)
         {
-            int numNodes = reader.ReadInt32();
+            int numNodes = reader.ReadArrayLength(
+                sizeof(int) * 2,
+                "Avatar skeleton nodes");
             m_Node = new List<Node>();
             for (int i = 0; i < numNodes; i++)
             {
@@ -81,7 +83,11 @@ namespace AnimeStudio
             m_ID = reader.ReadUInt32Array();
 
 
-            int numAxes = reader.ReadInt32();
+            int numAxes = reader.ReadArrayLength(
+                reader.version[0] > 5 || (reader.version[0] == 5 && reader.version[1] >= 4)
+                    ? sizeof(float) * 17 + sizeof(uint) * 2
+                    : sizeof(float) * 20 + sizeof(uint) * 2,
+                "Avatar skeleton axes");
             m_AxesArray = new List<Axes>();
             for (int i = 0; i < numAxes; i++)
             {
@@ -192,14 +198,22 @@ namespace AnimeStudio
 
             if (version[0] < 2018 || (version[0] == 2018 && version[1] < 2)) //2018.2 down
             {
-                int numHandles = reader.ReadInt32();
+                int numHandles = reader.ReadArrayLength(
+                    version[0] > 5 || (version[0] == 5 && version[1] >= 4)
+                        ? sizeof(float) * 10 + sizeof(uint) * 2
+                        : sizeof(float) * 12 + sizeof(uint) * 2,
+                    "Avatar handles");
                 m_Handles = new List<Handle>();
                 for (int i = 0; i < numHandles; i++)
                 {
                     m_Handles.Add(new Handle(reader));
                 }
 
-                int numColliders = reader.ReadInt32();
+                int numColliders = reader.ReadArrayLength(
+                    version[0] > 5 || (version[0] == 5 && version[1] >= 4)
+                        ? sizeof(float) * 14 + sizeof(uint) * 4
+                        : sizeof(float) * 16 + sizeof(uint) * 4,
+                    "Avatar colliders");
                 m_ColliderArray = new List<Collider>(numColliders);
                 for (int i = 0; i < numColliders; i++)
                 {
@@ -358,13 +372,17 @@ namespace AnimeStudio
         public bool m_SkeletonHasParents;
         public HumanDescription(ObjectReader reader)
         {
-            int numHumans = reader.ReadInt32();
+            int numHumans = reader.ReadArrayLength(
+                sizeof(int) * 2 + sizeof(float) * 10 + sizeof(bool),
+                "Human description bones");
             m_Human = new List<HumanBone>(numHumans);
             for (int i = 0; i < numHumans; i++)
             {
                 m_Human.Add(new HumanBone(reader));
             }
-            int numSkeleton = reader.ReadInt32();
+            int numSkeleton = reader.ReadArrayLength(
+                sizeof(int) * 2 + sizeof(float) * 10,
+                "Human description skeleton bones");
             m_Skeleton = new List<SkeletonBone>(numSkeleton);
             for (int i = 0; i < numSkeleton; i++)
             {
@@ -410,7 +428,9 @@ namespace AnimeStudio
             // tested with multiple games, both hoyo and base unity and this align doesnt mess anything up....
             reader.AlignStream();
 
-            int numTOS = reader.ReadInt32();
+            int numTOS = reader.ReadArrayLength(
+                sizeof(uint) + sizeof(int),
+                "Avatar TOS map");
             m_TOS = new Dictionary<uint, string>();
             for (int i = 0; i < numTOS; i++)
             {
