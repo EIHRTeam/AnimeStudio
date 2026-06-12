@@ -807,7 +807,7 @@ namespace AnimeStudio
                                 }
                                 blocksStream.Write(uncompressedBytes.ToArray(), 0, uncompressedSize);
                             }
-                            catch (Exception ex)
+                            catch (Exception ex) when (ex is not OutOfMemoryException)
                             {
                                 Console.WriteLine($"Zstd decompression error:\n{ex}");
                             }

@@ -159,12 +159,12 @@ namespace AnimeStudio
         private Stream CreateBlocksStream(string path)
         {
             Stream blocksStream;
-            var uncompressedSizeSum = (int)m_BlocksInfo.Sum(x => x.uncompressedSize);
-            Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X8}");
+            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
             if (uncompressedSizeSum >= int.MaxValue)
                 blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
             else
-                blocksStream = new MemoryStream(uncompressedSizeSum);
+                blocksStream = new MemoryStream((int)uncompressedSizeSum);
             return blocksStream;
         }
 
@@ -224,7 +224,7 @@ namespace AnimeStudio
                     return OodleHelper.Decompress(compressed, decompressed);
                 else
                     return LZ4.Instance.Decompress(compressed, decompressed);
-            } catch (Exception ex)
+            } catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 Logger.Error($"Decompression failed: {ex.Message}");
                 throw;

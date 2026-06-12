@@ -97,7 +97,7 @@ namespace AnimeStudio
                         throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                     }
                     blocksInfoUncompressedStream = new MemoryStream(uncompressedBytesSpan.ToArray());
-                } catch (Exception e)
+                } catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     throw new IOException($"Lz4 decompression error {e.Message}");
                 } finally
@@ -121,12 +121,12 @@ namespace AnimeStudio
         private Stream CreateBlocksStream(string path)
         {
             Stream blocksStream;
-            var uncompressedSizeSum = (int)m_BlocksInfo.Sum(x => x.uncompressedSize);
-            Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X8}");
+            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
             if (uncompressedSizeSum >= int.MaxValue)
                 blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
             else
-                blocksStream = new MemoryStream(uncompressedSizeSum);
+                blocksStream = new MemoryStream((int)uncompressedSizeSum);
             return blocksStream;
         }
 
@@ -167,7 +167,7 @@ namespace AnimeStudio
                                 Logger.Warning($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                             }
                         }
-                        catch (Exception e)
+                        catch (Exception e) when (e is not OutOfMemoryException)
                         {
                             Logger.Error($"Lz4 decompression error : {e.Message}");
                         }
