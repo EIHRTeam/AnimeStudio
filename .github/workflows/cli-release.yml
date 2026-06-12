@@ -115,11 +115,29 @@ jobs:
             --version '${{ needs.metadata.outputs.version }}' \
             --output-dir artifacts
 
+      - name: Package Debian (.deb)
+        if: matrix.rid == 'linux-x64'
+        shell: bash
+        run: |
+          ./scripts/package-deb.sh \
+            "artifacts/AnimeStudio.CLI-${{ needs.metadata.outputs.version }}-linux-x64.tar.gz" \
+            "${{ needs.metadata.outputs.version }}" \
+            artifacts
+
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.rid }}
           path: artifacts/AnimeStudio.CLI-${{ needs.metadata.outputs.version }}-${{ matrix.rid }}.${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Debian package
+        if: matrix.rid == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-x64-deb
+          path: artifacts/anime-studio-cli_*_amd64.deb
           if-no-files-found: error
           retention-days: 7
 

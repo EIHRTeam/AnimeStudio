@@ -1,0 +1,16 @@
+[Unit]
+Description=AnimeStudio CLI batch extraction
+After=network.target
+
+[Service]
+Type=oneshot
+User=anime-studio
+Group=anime-studio
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
+Environment=DOTNET_GCConserveMemory=5
+MemoryMax=14G
+ExecStart=/usr/bin/anime-studio /srv/anime-studio/input /srv/anime-studio/output --game ArknightsEndfield
+
+[Install]
+WantedBy=multi-user.target
