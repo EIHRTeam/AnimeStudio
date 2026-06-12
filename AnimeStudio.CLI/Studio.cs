@@ -31,9 +31,130 @@ namespace AnimeStudio.CLI
         public static List<AssetItem> exportableAssets = new List<AssetItem>();
 
         public static Dictionary<ulong, string> Paths {  get; set; } = new Dictionary<ulong, string>();
-        public static List<string> PathStrings { get; set; } = new List<string>();
-        public static List<string> VOStrings { get; set; } = new List<string>();
-        public static List<string> EventStrings { get; set; } = new List<string>();
+        public static HashSet<string> PathStrings { get; } = new HashSet<string>(StringComparer.Ordinal);
+        public static HashSet<string> VOStrings { get; } = new HashSet<string>(StringComparer.Ordinal);
+        public static HashSet<string> EventStrings { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+        private const string ScrapeChunksDirectoryName = ".animestudio-scrape";
+        private static int scrapeChunkIndex;
+
+        public static void ResetScrapedStrings(string mapsPath)
+        {
+            PathStrings.Clear();
+            VOStrings.Clear();
+            EventStrings.Clear();
+            scrapeChunkIndex = 0;
+
+            var chunksPath = Path.Combine(mapsPath, ScrapeChunksDirectoryName);
+            if (Directory.Exists(chunksPath))
+            {
+                Directory.Delete(chunksPath, true);
+            }
+        }
+
+        public static void FlushScrapedStrings(string mapsPath)
+        {
+            if (PathStrings.Count == 0 && VOStrings.Count == 0 && EventStrings.Count == 0)
+            {
+                return;
+            }
+
+            var chunksPath = Path.Combine(mapsPath, ScrapeChunksDirectoryName);
+            Directory.CreateDirectory(chunksPath);
+
+            WriteScrapeChunk(chunksPath, nameof(PathStrings), PathStrings);
+            WriteScrapeChunk(chunksPath, nameof(VOStrings), VOStrings);
+            WriteScrapeChunk(chunksPath, nameof(EventStrings), EventStrings);
+
+            PathStrings.Clear();
+            VOStrings.Clear();
+            EventStrings.Clear();
+            scrapeChunkIndex++;
+        }
+
+        public static void CompleteScrapedStrings(string mapsPath)
+        {
+            FlushScrapedStrings(mapsPath);
+            Directory.CreateDirectory(mapsPath);
+
+            var chunksPath = Path.Combine(mapsPath, ScrapeChunksDirectoryName);
+            MergeScrapeChunks(chunksPath, nameof(PathStrings), Path.Combine(mapsPath, "PathStrings_Sorted.txt"));
+            MergeScrapeChunks(chunksPath, nameof(VOStrings), Path.Combine(mapsPath, "VOStrings_Sorted.txt"));
+            MergeScrapeChunks(chunksPath, nameof(EventStrings), Path.Combine(mapsPath, "EventStrings_Sorted.txt"));
+
+            if (Directory.Exists(chunksPath))
+            {
+                Directory.Delete(chunksPath, true);
+            }
+        }
+
+        private static void WriteScrapeChunk(string chunksPath, string name, HashSet<string> values)
+        {
+            if (values.Count == 0)
+            {
+                return;
+            }
+
+            var sortedValues = values.ToList();
+            sortedValues.Sort(StringComparer.Ordinal);
+            File.WriteAllLines(
+                Path.Combine(chunksPath, $"{name}-{scrapeChunkIndex:D8}.txt"),
+                sortedValues);
+        }
+
+        private static void MergeScrapeChunks(string chunksPath, string name, string outputPath)
+        {
+            var chunkFiles = Directory.Exists(chunksPath)
+                ? Directory.GetFiles(chunksPath, $"{name}-*.txt", SearchOption.TopDirectoryOnly)
+                : Array.Empty<string>();
+            var temporaryOutputPath = outputPath + ".tmp";
+            var readers = new List<StreamReader>(chunkFiles.Length);
+
+            try
+            {
+                var lines = new PriorityQueue<(string Value, StreamReader Reader), string>(
+                    StringComparer.Ordinal);
+                foreach (var chunkFile in chunkFiles)
+                {
+                    var reader = File.OpenText(chunkFile);
+                    readers.Add(reader);
+                    var line = reader.ReadLine();
+                    if (line != null)
+                    {
+                        lines.Enqueue((line, reader), line);
+                    }
+                }
+
+                using (var writer = File.CreateText(temporaryOutputPath))
+                {
+                    string previous = null;
+                    while (lines.TryDequeue(out var item, out _))
+                    {
+                        if (!string.Equals(previous, item.Value, StringComparison.Ordinal))
+                        {
+                            writer.WriteLine(item.Value);
+                            previous = item.Value;
+                        }
+
+                        var next = item.Reader.ReadLine();
+                        if (next != null)
+                        {
+                            lines.Enqueue((next, item.Reader), next);
+                        }
+                    }
+                }
+
+                File.Move(temporaryOutputPath, outputPath, true);
+            }
+            finally
+            {
+                foreach (var reader in readers)
+                {
+                    reader.Dispose();
+                }
+                File.Delete(temporaryOutputPath);
+            }
+        }
 
         public static int ExtractFolder(string path, string savePath)
         {
@@ -241,14 +362,22 @@ namespace AnimeStudio.CLI
             {
                 foreach (var asset in assetsFile.Objects)
                 {
+                    if (!asset.type.CanExport()
+                        && asset is not AssetBundle
+                        && asset is not IndexObject
+                        && asset is not ResourceManager)
+                    {
+                        continue;
+                    }
+
                     ProcessAssetData(asset, objectAssetItemDic, mihoyoBinDataNames, containers, ref i);
                 }
             }
             foreach ((var pptr, var name) in mihoyoBinDataNames)
             {
-                if (pptr.TryGet<MiHoYoBinData>(out var obj))
+                if (pptr.TryGet<MiHoYoBinData>(out var obj)
+                    && objectAssetItemDic.TryGetValue(obj, out var assetItem))
                 {
-                    var assetItem = objectAssetItemDic[obj];
                     if (int.TryParse(name, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hash))
                     {
                         assetItem.Text = name;
@@ -261,9 +390,10 @@ namespace AnimeStudio.CLI
             {
                 foreach ((var pptr, var container) in containers)
                 {
-                    if (pptr.TryGet(out var obj))
+                    if (pptr.TryGet(out var obj)
+                        && objectAssetItemDic.TryGetValue(obj, out var assetItem))
                     {
-                        objectAssetItemDic[obj].Container = container;
+                        assetItem.Container = container;
                     }
                 }
                 containers.Clear();
@@ -455,7 +585,7 @@ namespace AnimeStudio.CLI
                             break;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
                     Logger.Error($"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}");
                 }

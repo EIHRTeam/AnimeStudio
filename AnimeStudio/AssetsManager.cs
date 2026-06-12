@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Runtime;
 using System.Text;
 using System.Threading;
 using static AnimeStudio.ImportHelper;
@@ -16,6 +17,7 @@ namespace AnimeStudio
         public bool Silent = false;
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
+        public int LargeObjectHeapCompactionInterval { get; set; }
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
@@ -61,6 +63,7 @@ namespace AnimeStudio
         public AssetFilterData FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
 
         public Dictionary<string, List<long>> OffsetData = new();
+        private int clearCount;
 
         public void LoadFiles(params string[] files)
         {
@@ -257,7 +260,7 @@ namespace AnimeStudio
                         }
                     }
                 }
-                catch (Exception e)
+                catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     Logger.Error($"Error while reading assets file {reader.FullPath}", e);
                     reader.Dispose();
@@ -289,7 +292,7 @@ namespace AnimeStudio
                     assetsFileIndexCache.Add(assetsFile.fileName, assetsFileList.Count - 1);
                     assetsFileListHash.Add(assetsFile.fileName);
                 }
-                catch (Exception e)
+                catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     Logger.Error($"Error while reading assets file {reader.FullPath} from {Path.GetFileName(originalPath)}", e);
                     resourceFileReaders.TryAdd(reader.FileName, reader);
@@ -327,7 +330,7 @@ namespace AnimeStudio
                     }
                 }
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
                 Logger.Error($"Error while reading web file {reader.FullPath}", e);
             }
@@ -387,7 +390,7 @@ namespace AnimeStudio
                             entryReader = entryReader.PreProcessing(Game);
                             LoadFile(entryReader);
                         }
-                        catch (Exception e)
+                        catch (Exception e) when (e is not OutOfMemoryException)
                         {
                             Logger.Error($"Error while reading zip split file {basePath}", e);
                         }
@@ -418,14 +421,14 @@ namespace AnimeStudio
                                 resourceFileReaders.TryAdd(entry.Name, entryReader);
                             }
                         }
-                        catch (Exception e)
+                        catch (Exception e) when (e is not OutOfMemoryException)
                         {
                             Logger.Error($"Error while reading zip entry {entry.FullName}", e);
                         }
                     }
                 }
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
                 Logger.Error($"Error while reading zip file {reader.FileName}", e);
             }
@@ -484,7 +487,7 @@ namespace AnimeStudio
                 }
                 
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
                 Logger.Error($"Error while reading block file {reader.FileName}", e);
             }
@@ -566,7 +569,7 @@ namespace AnimeStudio
                 }
                 Logger.Error($"Game type mismatch, Expected {name} but got {Game.Name} ({Game.GetType().Name}) !!");
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
                 var str = $"Error while reading file {reader.FullPath}";
                 if (originalPath != null)
@@ -594,7 +597,7 @@ namespace AnimeStudio
             }
         }
 
-        public void Clear()
+        public void Clear(bool compactLargeObjectHeap = false)
         {
             Logger.Verbose("Cleaning up...");
 
@@ -622,8 +625,14 @@ namespace AnimeStudio
             tokenSource.Dispose();
             tokenSource = new CancellationTokenSource();
 
-            // GC.WaitForPendingFinalizers();
-            // GC.Collect();
+            var intervalReached = LargeObjectHeapCompactionInterval > 0
+                && ++clearCount % LargeObjectHeapCompactionInterval == 0;
+            if (compactLargeObjectHeap || intervalReached)
+            {
+                GCSettings.LargeObjectHeapCompactionMode =
+                    GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect();
+            }
         }
 
         private void ReadAssets()
@@ -682,7 +691,7 @@ namespace AnimeStudio
                         };
                         assetsFile.AddObject(obj);
                     }
-                    catch (Exception e)
+                    catch (Exception e) when (e is not OutOfMemoryException)
                     {
                         var sb = new StringBuilder();
                         sb.AppendLine("Unable to load object")

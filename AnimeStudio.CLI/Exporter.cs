@@ -168,7 +168,7 @@ namespace AnimeStudio.CLI
                             Studio.EventStrings.Add(match.Value.Trim());
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
                     {
                         Console.WriteLine($"Error processing MonoBehaviour segment: {ex.Message}");
                     }

@@ -40,6 +40,11 @@ namespace AnimeStudio
             assetsManager.SpecifyUnityVersion = version;
         }
 
+        public static void SetLargeObjectHeapCompactionInterval(int interval)
+        {
+            assetsManager.LargeObjectHeapCompactionInterval = interval;
+        }
+
         public static string[] GetMaps()
         {
             Directory.CreateDirectory(MapName);
@@ -340,7 +345,10 @@ namespace AnimeStudio
             {
                 Logger.Warning($"AssetMap was not build, {e}");
             }
-            
+            finally
+            {
+                StringCache.Clear();
+            }
         }
 
         private static void BuildAssetMap(string file, List<AssetEntry> assets, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
@@ -530,91 +538,97 @@ namespace AnimeStudio
         public static string[] ParseAssetMap(string mapName, ExportListType mapType, ClassIDType[] typeFilter, Regex[] nameFilter, Regex[] containerFilter)
         {
             var matches = new HashSet<string>();
-
-            switch (mapType)
+            try
             {
-                case ExportListType.MessagePack:
-                    {
-                        using var stream = File.OpenRead(mapName);
-                        var assetMap = MessagePackSerializer.Deserialize<AssetMap>(stream, MessagePackSerializerOptions.Standard.WithCompression(MessagePackCompression.Lz4BlockArray));
-                        foreach(var entry in assetMap.AssetEntries)
+                switch (mapType)
+                {
+                    case ExportListType.MessagePack:
                         {
-                            var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(entry.Name));
-                            var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(entry.Container));
-                            var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x == entry.Type);
-                            if (isNameMatch && isContainerMatch && isTypeMatch)
+                            using var stream = File.OpenRead(mapName);
+                            var assetMap = MessagePackSerializer.Deserialize<AssetMap>(stream, MessagePackSerializerOptions.Standard.WithCompression(MessagePackCompression.Lz4BlockArray));
+                            foreach(var entry in assetMap.AssetEntries)
                             {
-                                matches.Add(entry.Source);
+                                var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(entry.Name));
+                                var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(entry.Container));
+                                var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x == entry.Type);
+                                if (isNameMatch && isContainerMatch && isTypeMatch)
+                                {
+                                    matches.Add(entry.Source);
+                                }
                             }
                         }
-                    }
 
-                    break;
-                case ExportListType.XML:
-                    {
-                        using var stream = File.OpenRead(mapName);
-                        using var reader = XmlReader.Create(stream);
-                        reader.ReadToFollowing("Assets");
-                        reader.ReadToFollowing("Asset");
-                        do
+                        break;
+                    case ExportListType.XML:
                         {
-                            reader.ReadToFollowing("Name");
-                            var name = reader.ReadInnerXml();
-
-                            var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(name));
-
-                            reader.ReadToFollowing("Container");
-                            var container = reader.ReadInnerXml();
-
-                            var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(container));
-
-                            reader.ReadToFollowing("Type");
-                            var type = reader.ReadInnerXml();
-
-                            var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x.ToString().Equals(type, StringComparison.OrdinalIgnoreCase));
-
-                            reader.ReadToFollowing("PathID");
-                            var pathID = reader.ReadInnerXml();
-
-                            reader.ReadToFollowing("Source");
-                            var source = reader.ReadInnerXml();
-
-                            if (isNameMatch && isContainerMatch && isTypeMatch)
+                            using var stream = File.OpenRead(mapName);
+                            using var reader = XmlReader.Create(stream);
+                            reader.ReadToFollowing("Assets");
+                            reader.ReadToFollowing("Asset");
+                            do
                             {
-                                matches.Add(source);
-                            }
+                                reader.ReadToFollowing("Name");
+                                var name = reader.ReadInnerXml();
 
-                            reader.ReadEndElement();
-                        } while (reader.ReadToNextSibling("Asset"));
-                    }
+                                var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(name));
 
-                    break;
-                case ExportListType.JSON:
-                    {
-                        using var stream = File.OpenRead(mapName);
-                        using var file = new StreamReader(stream);
-                        using var reader = new JsonTextReader(file);
+                                reader.ReadToFollowing("Container");
+                                var container = reader.ReadInnerXml();
 
-                        var serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.Indented };
-                        serializer.Converters.Add(new StringEnumConverter());
+                                var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(container));
 
-                        var entries = serializer.Deserialize<List<AssetEntry>>(reader);
-                        foreach (var entry in entries)
+                                reader.ReadToFollowing("Type");
+                                var type = reader.ReadInnerXml();
+
+                                var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x.ToString().Equals(type, StringComparison.OrdinalIgnoreCase));
+
+                                reader.ReadToFollowing("PathID");
+                                var pathID = reader.ReadInnerXml();
+
+                                reader.ReadToFollowing("Source");
+                                var source = reader.ReadInnerXml();
+
+                                if (isNameMatch && isContainerMatch && isTypeMatch)
+                                {
+                                    matches.Add(source);
+                                }
+
+                                reader.ReadEndElement();
+                            } while (reader.ReadToNextSibling("Asset"));
+                        }
+
+                        break;
+                    case ExportListType.JSON:
                         {
-                            var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(entry.Name));
-                            var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(entry.Container));
-                            var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x == entry.Type);
-                            if (isNameMatch && isContainerMatch && isTypeMatch)
+                            using var stream = File.OpenRead(mapName);
+                            using var file = new StreamReader(stream);
+                            using var reader = new JsonTextReader(file);
+
+                            var serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.Indented };
+                            serializer.Converters.Add(new StringEnumConverter());
+
+                            var entries = serializer.Deserialize<List<AssetEntry>>(reader);
+                            foreach (var entry in entries)
                             {
-                                matches.Add(entry.Source);
+                                var isNameMatch = nameFilter.Length == 0 || nameFilter.Any(x => x.IsMatch(entry.Name));
+                                var isContainerMatch = containerFilter.Length == 0 || containerFilter.Any(x => x.IsMatch(entry.Container));
+                                var isTypeMatch = typeFilter.Length == 0 || typeFilter.Any(x => x == entry.Type);
+                                if (isNameMatch && isContainerMatch && isTypeMatch)
+                                {
+                                    matches.Add(entry.Source);
+                                }
                             }
                         }
-                    }
 
-                    break;
+                        break;
+                }
+
+                return matches.ToArray();
             }
-
-            return matches.ToArray();
+            finally
+            {
+                StringCache.Clear();
+            }
         }
 
         private static void UpdateContainers(List<AssetEntry> assets, Game game)
@@ -716,24 +730,31 @@ namespace AnimeStudio
         }
         public static async Task BuildBoth(string[] files, string mapName, string baseFolder, Game game, string savePath, ExportListType exportListType, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
         {
-            Logger.Info($"Building Both...");
-            CABMap.Clear();
-            Progress.Reset();
-            var collision = 0;
-            BaseFolder = baseFolder;
-            assetsManager.Game = game;
-            var assets = new List<AssetEntry>();
-            foreach(var file in LoadFiles(files))
+            try
             {
-                BuildCABMap(file, ref collision);
-                BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters);
+                Logger.Info($"Building Both...");
+                CABMap.Clear();
+                Progress.Reset();
+                var collision = 0;
+                BaseFolder = baseFolder;
+                assetsManager.Game = game;
+                var assets = new List<AssetEntry>();
+                foreach(var file in LoadFiles(files))
+                {
+                    BuildCABMap(file, ref collision);
+                    BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters);
+                }
+
+                UpdateContainers(assets, game);
+                DumpCABMap(mapName);
+
+                Logger.Info($"Map build successfully !! {collision} collisions found");
+                await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
             }
-
-            UpdateContainers(assets, game);
-            DumpCABMap(mapName);
-
-            Logger.Info($"Map build successfully !! {collision} collisions found");
-            await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
+            finally
+            {
+                StringCache.Clear();
+            }
         }
     }
 }

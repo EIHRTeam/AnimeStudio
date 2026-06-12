@@ -22,6 +22,11 @@ namespace AnimeStudio
             _cache[key] = value;
             return value;
         }
+
+        public static void Clear()
+        {
+            _cache.Clear();
+        }
     }
 
     [MessagePackObject]

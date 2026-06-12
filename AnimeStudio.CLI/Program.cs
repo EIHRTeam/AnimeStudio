@@ -48,12 +48,22 @@ namespace AnimeStudio.CLI
                 Logger.FileLogging = Settings.Default.enableFileLogging;
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
+                AssetsHelper.SetLargeObjectHeapCompactionInterval(4);
+
+                if (Settings.Default.scrapeMonos)
+                {
+                    ResetScrapedStrings(mapsPath);
+                }
 
                 TypeFlags.SetTypes(Settings.Default.GetTypeFlags());
 
                 var classTypeFilter = Array.Empty<ClassIDType>();
                 if (!o.TypeFilter.IsNullOrEmpty())
                 {
+                    // An explicit type filter replaces the default type set. Required export
+                    // dependencies are added below after all requested types are parsed.
+                    TypeFlags.SetTypes(new Dictionary<ClassIDType, (bool, bool)>());
+
                     var exportTexture2D = false;
                     var exportMaterial = false;
                     var classTypeFilterList = new List<ClassIDType>();
@@ -124,6 +134,7 @@ namespace AnimeStudio.CLI
                 assetsManager.Silent = o.Silent;
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
+                assetsManager.LargeObjectHeapCompactionInterval = 4;
                 o.Output.Create();
 
                 if (o.Key != default)
@@ -184,6 +195,7 @@ namespace AnimeStudio.CLI
                     var fileList = new List<string>(toReadFile);
                     foreach (var file in fileList)
                     {
+                        var memoryLimitReached = false;
                         try
                         {
                             assetsManager.LoadFiles(file);
@@ -193,6 +205,10 @@ namespace AnimeStudio.CLI
                                 ExportAssets(o.Output.FullName, exportableAssets, o.GroupAssetsType, o.AssetExportType);
                             }
                         }
+                        catch (OutOfMemoryException)
+                        {
+                            memoryLimitReached = true;
+                        }
                         catch (Exception e)
                         {
                             Logger.Error($"Failed to process \"{file}\": {e}");
@@ -200,19 +216,30 @@ namespace AnimeStudio.CLI
                         finally
                         {
                             exportableAssets.Clear();
-                            assetsManager.Clear();
+                            assetsManager.Clear(memoryLimitReached);
+                            if (Properties.Settings.Default.scrapeMonos)
+                            {
+                                FlushScrapedStrings(mapsPath);
+                            }
+                        }
+                        if (memoryLimitReached)
+                        {
+                            Logger.Error("Memory limit reached; skipped the current input file.");
+                            Logger.Error(file);
                         }
                     }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
                 {
-                    Directory.CreateDirectory(mapsPath);
-                    File.WriteAllLines(Path.Combine(mapsPath, "PathStrings_Sorted.txt"), PathStrings.Distinct().OrderBy(p => p));
-                    File.WriteAllLines(Path.Combine(mapsPath, "VOStrings_Sorted.txt"), VOStrings.Distinct().OrderBy(p => p));
-                    File.WriteAllLines(Path.Combine(mapsPath, "EventStrings_Sorted.txt"), EventStrings.Distinct().OrderBy(p => p));
+                    CompleteScrapedStrings(mapsPath);
                 }
 
                 return 0;
+            }
+            catch (OutOfMemoryException)
+            {
+                Console.Error.WriteLine("Memory limit reached before the current operation could be recovered.");
+                return 1;
             }
             catch (Exception e)
             {
