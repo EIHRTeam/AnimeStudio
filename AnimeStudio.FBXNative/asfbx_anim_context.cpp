@@ -25,3 +25,8 @@ AsFbxAnimContext::AsFbxAnimContext(bool32_t eulerFilter)
 	lBlendShape = nullptr;
 	lAnimCurve = nullptr;
 }
+
+AsFbxAnimContext::~AsFbxAnimContext()
+{
+	delete lFilter;
+}

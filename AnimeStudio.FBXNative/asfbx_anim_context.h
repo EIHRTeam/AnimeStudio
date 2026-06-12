@@ -27,6 +27,6 @@ struct AsFbxAnimContext
 	FbxAnimCurve* lAnimCurve;
 
 	AsFbxAnimContext(bool32_t eulerFilter);
-	~AsFbxAnimContext() = default;
+	~AsFbxAnimContext();
 
 };
