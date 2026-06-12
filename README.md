@@ -1,10 +1,15 @@
 # Anime Studio
 
-This is a fork of the original Anime Studio, with a focus on improving support for Linux CI/CD and macOS environments.
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EIHRTeam/AnimeStudio)<br>
+[Ask DeepWiki](https://deepwiki.com/EIHRTeam/AnimeStudio)
 
-Please note that much of the work was AI-assisted. The project is intended to “just work,” rather than to be polished or highly optimized.
+This is a fork of the original Anime Studio, focused on improving Linux CI/CD support and compatibility with macOS environments.
 
-Original README below.
+The primary goal of this fork is to optimize the CLI for processing Arknights: Endfield VFS files in low-memory Linux and macOS environments. Maintenance of the GUI version and support for other games are not planned and will not be under consideration.
+
+Please note that much of the work in this fork was AI-assisted. The project is intended to “just work” for its specific use case, rather than to be a polished or broadly optimized solution.
+
+Original README follows.
 
 ---
 
