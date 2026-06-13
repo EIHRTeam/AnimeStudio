@@ -45,6 +45,11 @@ namespace AnimeStudio
             assetsManager.LargeObjectHeapCompactionInterval = interval;
         }
 
+        public static void SetContainerStorageOptions(ContainerStorageOptions options)
+        {
+            assetsManager.ContainerStorageOptions = options ?? new ContainerStorageOptions();
+        }
+
         public static string[] GetMaps()
         {
             Directory.CreateDirectory(MapName);

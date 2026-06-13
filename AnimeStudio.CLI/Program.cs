@@ -49,6 +49,8 @@ namespace AnimeStudio.CLI
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
                 AssetsHelper.SetLargeObjectHeapCompactionInterval(4);
+                var containerStorageOptions = Settings.Default.GetContainerStorageOptions();
+                AssetsHelper.SetContainerStorageOptions(containerStorageOptions);
 
                 if (Settings.Default.scrapeMonos)
                 {
@@ -135,6 +137,7 @@ namespace AnimeStudio.CLI
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
                 assetsManager.LargeObjectHeapCompactionInterval = 4;
+                assetsManager.ContainerStorageOptions = containerStorageOptions;
                 o.Output.Create();
 
                 if (o.Key != default)
