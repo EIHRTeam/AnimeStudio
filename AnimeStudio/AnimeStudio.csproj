@@ -23,6 +23,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<InternalsVisibleTo Include="AnimeStudio.Core.Smoke" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<Content Include="CNKeys.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>

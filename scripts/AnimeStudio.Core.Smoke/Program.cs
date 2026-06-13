@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using AnimeStudio;
 
@@ -12,10 +13,18 @@ try
     VerifyNegativeArrayLength();
     VerifyObjectBoundedArrayLength();
     VerifyObjectBoundedStringLength();
-    VerifyLargeContainerUsesTemporaryFile(typeof(MhyFile));
-    VerifyLargeContainerUsesTemporaryFile(typeof(Blb3File));
-    VerifyLargeContainerUsesTemporaryFile(typeof(HygFile));
-    VerifyLargeContainerUsesTemporaryFile(typeof(VFSFile));
+    VerifySharedSlices();
+    VerifyBackingHashesAndCleanup();
+    VerifyAggregateMemoryBudget();
+    VerifyFailedSliceHandoffCleanup();
+    VerifyExceptionalCleanup<OperationCanceledException>();
+    VerifyExceptionalCleanup<OutOfMemoryException>();
+    VerifyStaleDirectoryCleanup();
+    VerifyContainerSlices(typeof(BundleFile));
+    VerifyContainerSlices(typeof(MhyFile));
+    VerifyContainerSlices(typeof(Blb3File));
+    VerifyContainerSlices(typeof(HygFile));
+    VerifyContainerSlices(typeof(VFSFile));
 
     Console.WriteLine("Core parser smoke checks passed.");
     return 0;
@@ -133,32 +142,328 @@ static void VerifyObjectBoundedStringLength()
     AssertThrows<EndOfStreamException>(() => reader.ReadAlignedString());
 }
 
-static void VerifyLargeContainerUsesTemporaryFile(Type containerType)
+static void VerifySharedSlices()
 {
-    var instance = RuntimeHelpers.GetUninitializedObject(containerType);
-    var blocksField = containerType.GetField(
-        "m_BlocksInfo",
-        BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new MissingFieldException(containerType.FullName, "m_BlocksInfo");
-    blocksField.SetValue(
-        instance,
-        new List<BundleFile.StorageBlock>
+    var data = Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray();
+    using var manager = new ContainerStorageManager(new ContainerStorageOptions
+    {
+        MemoryThresholdBytes = data.Length + 1
+    });
+    using var store = manager.Create(data.Length, "memory.bundle");
+    store.Write(data);
+    store.Seal();
+
+    using var first = store.CreateSlice(100, 700);
+    using var second = store.CreateSlice(900, 800);
+
+    first.Position = 25;
+    second.Position = 35;
+    Assert(first.ReadByte() == data[125], "First slice position was not independent.");
+    Assert(second.ReadByte() == data[935], "Second slice position was not independent.");
+    Assert(first.Position == 26, "Reading the second slice changed the first slice position.");
+
+    first.Seek(-1, SeekOrigin.End);
+    Assert(first.ReadByte() == data[799], "End-relative slice seek returned the wrong byte.");
+    Assert(first.ReadByte() == -1, "Slice read crossed its upper boundary.");
+    AssertThrows<IOException>(() => first.Seek(1, SeekOrigin.End));
+    AssertThrows<ArgumentOutOfRangeException>(() => first.Position = -1);
+    AssertThrows<NotSupportedException>(() => first.WriteByte(1));
+    AssertThrows<EndOfStreamException>(() => store.CreateSlice(data.Length - 10, 11));
+
+    Parallel.For(0, 64, iteration =>
+    {
+        using var slice = store.CreateSlice(iteration, 512);
+        var actual = new byte[512];
+        slice.ReadExactly(actual);
+        Assert(
+            actual.SequenceEqual(data.AsSpan(iteration, 512).ToArray()),
+            $"Concurrent slice {iteration} returned incorrect bytes.");
+    });
+
+    using var cancelled = store.CreateSlice(0, 1);
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+    AssertThrows<OperationCanceledException>(
+        () => cancelled.ReadAsync(new Memory<byte>(new byte[1]), cancellation.Token)
+            .AsTask()
+            .GetAwaiter()
+            .GetResult());
+
+    store.Dispose();
+    AssertThrows<ObjectDisposedException>(() => store.CreateSlice(0, 1));
+    second.Position = 0;
+    Assert(second.ReadByte() == data[900], "Disposing the owner invalidated a live slice.");
+}
+
+static void VerifyBackingHashesAndCleanup()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        var data = Enumerable.Range(0, 1024 * 1024)
+            .Select(index => (byte)(index * 31))
+            .ToArray();
+        var memoryHash = ReadBackingHash(data, data.Length + 1, root, out var memoryWasFileBacked);
+        var diskHash = ReadBackingHash(data, 0, root, out var diskWasFileBacked);
+
+        Assert(!memoryWasFileBacked, "Memory backing unexpectedly used a temporary file.");
+        Assert(diskWasFileBacked, "Disk backing did not use a temporary file.");
+        Assert(memoryHash.SequenceEqual(diskHash), "Memory and disk backing hashes differ.");
+        Assert(!Directory.EnumerateDirectories(root, "run-*").Any(), "A completed backing store left a run directory.");
+    }
+    finally
+    {
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAggregateMemoryBudget()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        using var manager = new ContainerStorageManager(new ContainerStorageOptions
         {
-            new() { uncompressedSize = 1_200_000_000 },
-            new() { uncompressedSize = 1_200_000_000 },
+            MemoryThresholdBytes = 1024,
+            TemporaryDirectory = root
         });
 
-    var createMethod = containerType.GetMethod(
-        "CreateBlocksStream",
-        BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new MissingMethodException(containerType.FullName, "CreateBlocksStream");
-    var path = Path.Combine(
-        Path.GetTempPath(),
-        $"animestudio-{containerType.Name}-{Guid.NewGuid():N}");
+        var firstStore = manager.Create(700, "first.bundle");
+        firstStore.Write(new byte[700]);
+        firstStore.Seal();
+        var firstSlice = firstStore.CreateSlice(0, 700);
+        firstStore.Dispose();
 
-    using var stream = (Stream)(createMethod.Invoke(instance, [path])
-        ?? throw new InvalidOperationException($"{containerType.Name} returned a null blocks stream."));
-    Assert(stream is FileStream, $"{containerType.Name} did not use a temporary file above 2 GiB.");
+        using (var secondStore = manager.Create(400, "second.bundle"))
+        {
+            Assert(secondStore.IsFileBacked,
+                "A store exceeding the aggregate memory budget did not use disk.");
+            secondStore.Write(new byte[400]);
+            secondStore.Seal();
+        }
+
+        firstSlice.Dispose();
+
+        using var thirdStore = manager.Create(400, "third.bundle");
+        Assert(!thirdStore.IsFileBacked,
+            "Released slice memory was not returned to the aggregate budget.");
+        thirdStore.Write(new byte[400]);
+        thirdStore.Seal();
+    }
+    finally
+    {
+        Directory.Delete(root, true);
+    }
+}
+
+static byte[] ReadBackingHash(
+    byte[] data,
+    long threshold,
+    string root,
+    out bool wasFileBacked)
+{
+    var manager = new ContainerStorageManager(new ContainerStorageOptions
+    {
+        MemoryThresholdBytes = threshold,
+        TemporaryDirectory = root
+    });
+    var store = manager.Create(data.Length, "hash.bundle");
+    store.Write(data);
+    store.Seal();
+    var slice = store.CreateSlice(0, data.Length);
+    wasFileBacked = store.IsFileBacked;
+    var temporaryPath = store.TemporaryPath;
+
+    manager.Dispose();
+    store.Dispose();
+    if (temporaryPath != null)
+    {
+        Assert(File.Exists(temporaryPath), "Backing file was deleted while a slice still owned it.");
+    }
+
+    var hash = SHA256.HashData(slice);
+    slice.Dispose();
+    if (temporaryPath != null)
+    {
+        Assert(!File.Exists(temporaryPath), "Backing file remained after the final slice closed.");
+    }
+
+    return hash;
+}
+
+static void VerifyFailedSliceHandoffCleanup()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        using var manager = new ContainerStorageManager(new ContainerStorageOptions
+        {
+            MemoryThresholdBytes = 0,
+            TemporaryDirectory = root
+        });
+        using var store = manager.Create(32, "failure.bundle");
+        store.Write(Enumerable.Range(0, 32).Select(index => (byte)index).ToArray());
+
+        var directory = new[]
+        {
+            new BundleFile.Node { path = "first", offset = 0, size = 16 },
+            new BundleFile.Node { path = "invalid", offset = 24, size = 16 }
+        };
+        AssertThrows<EndOfStreamException>(() => ContainerFileStreams.Create(store, directory));
+        store.Dispose();
+        manager.Dispose();
+
+        Assert(!Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Any(),
+            "Failed slice handoff left a backing file.");
+        Assert(!Directory.EnumerateDirectories(root, "run-*").Any(),
+            "Failed slice handoff left a run directory.");
+    }
+    finally
+    {
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyExceptionalCleanup<TException>()
+    where TException : Exception, new()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        try
+        {
+            using var manager = new ContainerStorageManager(new ContainerStorageOptions
+            {
+                MemoryThresholdBytes = 0,
+                TemporaryDirectory = root
+            });
+            using var store = manager.Create(32, $"{typeof(TException).Name}.bundle");
+            store.Write(new byte[32]);
+            throw new TException();
+        }
+        catch (TException)
+        {
+        }
+
+        Assert(!Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Any(),
+            $"{typeof(TException).Name} cleanup left a backing file.");
+        Assert(!Directory.EnumerateDirectories(root, "run-*").Any(),
+            $"{typeof(TException).Name} cleanup left a run directory.");
+    }
+    finally
+    {
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyStaleDirectoryCleanup()
+{
+    var root = CreateTemporaryRoot();
+    var staleDirectory = Path.Combine(root, "run-stale");
+    var activeDirectory = Path.Combine(root, "run-active");
+    Directory.CreateDirectory(staleDirectory);
+    Directory.CreateDirectory(activeDirectory);
+    File.WriteAllText(Path.Combine(staleDirectory, ".lock"), "stale");
+    var activeLockPath = Path.Combine(activeDirectory, ".lock");
+    File.WriteAllText(activeLockPath, "active");
+    Directory.SetLastWriteTimeUtc(staleDirectory, DateTime.UtcNow.AddDays(-8));
+    Directory.SetLastWriteTimeUtc(activeDirectory, DateTime.UtcNow.AddDays(-8));
+
+    using var activeLock = new FileStream(
+        activeLockPath,
+        FileMode.Open,
+        FileAccess.ReadWrite,
+        FileShare.Read);
+    try
+    {
+        using var manager = new ContainerStorageManager(new ContainerStorageOptions
+        {
+            MemoryThresholdBytes = 0,
+            TemporaryDirectory = root
+        });
+        using var store = manager.Create(16, "cleanup.bundle");
+        store.Write(new byte[16]);
+        manager.Dispose();
+        store.Dispose();
+
+        Assert(!Directory.Exists(staleDirectory), "Unlocked stale run directory was not removed.");
+        Assert(Directory.Exists(activeDirectory), "A locked stale run directory was removed.");
+    }
+    finally
+    {
+        activeLock.Dispose();
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, true);
+        }
+    }
+}
+
+static void VerifyContainerSlices(Type containerType)
+{
+    var data = Enumerable.Range(0, 2048).Select(index => (byte)(index % 239)).ToArray();
+    using var manager = new ContainerStorageManager(new ContainerStorageOptions
+    {
+        MemoryThresholdBytes = data.Length + 1
+    });
+    using var store = manager.Create(data.Length, $"{containerType.Name}.bundle");
+    store.Write(data);
+
+    var nodes = new List<BundleFile.Node>
+    {
+        new() { path = "CAB-first", offset = 17, size = 333 },
+        new() { path = "archive/resource.resS", offset = 777, size = 512 }
+    };
+    var instance = RuntimeHelpers.GetUninitializedObject(containerType);
+    var directoryField = containerType.GetField(
+        "m_DirectoryInfo",
+        BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(containerType.FullName, "m_DirectoryInfo");
+    directoryField.SetValue(instance, nodes);
+
+    var readFilesMethod = containerType.GetMethod(
+        "ReadFiles",
+        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(containerType.FullName, "ReadFiles");
+    readFilesMethod.Invoke(instance, [store]);
+
+    var filesField = containerType.GetField(
+        "fileList",
+        BindingFlags.Instance | BindingFlags.Public)
+        ?? throw new MissingFieldException(containerType.FullName, "fileList");
+    var files = (List<StreamFile>)(filesField.GetValue(instance)
+        ?? throw new InvalidOperationException($"{containerType.Name} did not create files."));
+
+    try
+    {
+        Assert(files.Count == nodes.Count, $"{containerType.Name} returned the wrong file count.");
+        for (var index = 0; index < files.Count; index++)
+        {
+            Assert(files[index].stream is ReadOnlySliceStream,
+                $"{containerType.Name} copied an entry instead of returning a bounded slice.");
+            var actualHash = SHA256.HashData(files[index].stream);
+            var expectedHash = SHA256.HashData(
+                data.AsSpan((int)nodes[index].offset, (int)nodes[index].size));
+            Assert(actualHash.SequenceEqual(expectedHash),
+                $"{containerType.Name} entry hash differs from the source range.");
+        }
+    }
+    finally
+    {
+        foreach (var file in files)
+        {
+            file.stream.Dispose();
+        }
+    }
+}
+
+static string CreateTemporaryRoot()
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-core-smoke-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    return root;
 }
 
 static byte[] BuildAnimatorController(

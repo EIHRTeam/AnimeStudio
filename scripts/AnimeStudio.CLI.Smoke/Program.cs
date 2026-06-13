@@ -15,24 +15,31 @@ var rid = args[1];
 
 try
 {
+    var runtimeCompatible = IsRuntimeCompatible(rid);
     VerifyPackageLayout(publishDirectory, rid);
     VerifyRuntimeConfiguration(publishDirectory);
-    VerifyExplicitTypeFilter(publishDirectory);
-    VerifyScrapeChunkMerge(publishDirectory);
-    VerifyAclResultValidation(publishDirectory);
-    VerifyFmodAudioConversion(publishDirectory, rid);
+    VerifyStreamingConfiguration(publishDirectory, runtimeCompatible);
 
-    if (rid == "win-x64")
+    if (runtimeCompatible)
     {
-        VerifyWindowsNativeLibraries(publishDirectory);
-        VerifyWindowsCapabilityPath(publishDirectory);
-    }
-    else
-    {
-        VerifyUnixDegradationPaths(publishDirectory);
+        VerifyExplicitTypeFilter(publishDirectory);
+        VerifyScrapeChunkMerge(publishDirectory);
+        VerifyAclResultValidation(publishDirectory);
+        VerifyFmodAudioConversion(publishDirectory, rid);
+
+        if (rid == "win-x64")
+        {
+            VerifyWindowsNativeLibraries(publishDirectory);
+            VerifyWindowsCapabilityPath(publishDirectory);
+        }
+        else
+        {
+            VerifyUnixDegradationPaths(publishDirectory);
+        }
     }
 
-    Console.WriteLine($"Package smoke checks passed for {rid}.");
+    var scope = runtimeCompatible ? "package and runtime" : "cross-platform package";
+    Console.WriteLine($"{scope} smoke checks passed for {rid}.");
     return 0;
 }
 catch (Exception exception)
@@ -59,6 +66,80 @@ static void VerifyRuntimeConfiguration(string publishDirectory)
         properties.GetProperty("System.GC.HeapHardLimitPercent").GetInt32() == 75,
         "GC heap hard limit must be 75 percent.");
     Assert(properties.GetProperty("System.GC.RetainVM").GetBoolean(), "GC RetainVM must remain enabled.");
+}
+
+static bool IsRuntimeCompatible(string rid)
+{
+    return rid switch
+    {
+        "win-x64" => OperatingSystem.IsWindows()
+            && RuntimeInformation.ProcessArchitecture == Architecture.X64,
+        "linux-x64" => OperatingSystem.IsLinux()
+            && RuntimeInformation.ProcessArchitecture == Architecture.X64,
+        "osx-arm64" => OperatingSystem.IsMacOS()
+            && RuntimeInformation.ProcessArchitecture == Architecture.Arm64,
+        _ => false
+    };
+}
+
+static void VerifyStreamingConfiguration(string publishDirectory, bool verifyRuntimeOverride)
+{
+    using (var document = JsonDocument.Parse(
+        File.ReadAllText(Path.Combine(publishDirectory, "appsettings.json"))))
+    {
+        var streaming = document.RootElement.GetProperty("streaming");
+        Assert(
+            streaming.GetProperty("containerMemoryThresholdMiB").GetInt64() == 256,
+            "The default container memory threshold must be 256 MiB.");
+        Assert(
+            streaming.GetProperty("temporaryDirectory").ValueKind == JsonValueKind.Null,
+            "The default temporary directory must remain platform-resolved.");
+    }
+
+    if (!verifyRuntimeOverride)
+    {
+        return;
+    }
+
+    var previousDirectory = Environment.GetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR");
+    var configuredDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-streaming-config-{Guid.NewGuid():N}");
+    try
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR", configuredDirectory);
+        using var context = CreateLoadContext(publishDirectory);
+        var cliAssembly = context.LoadFromAssemblyPath(
+            Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+        var settingsType = RequireType(cliAssembly, "AnimeStudio.CLI.Properties.Settings");
+        var defaultSettings = settingsType.GetProperty(
+            "Default",
+            BindingFlags.Public | BindingFlags.Static)
+            ?.GetValue(null)
+            ?? throw new MissingMemberException(settingsType.FullName, "Default");
+        var getOptionsMethod = settingsType.GetMethod(
+            "GetContainerStorageOptions",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new MissingMethodException(settingsType.FullName, "GetContainerStorageOptions");
+        var options = getOptionsMethod.Invoke(defaultSettings, null)
+            ?? throw new InvalidOperationException("Streaming options were not created.");
+        var optionsType = options.GetType();
+
+        Assert(
+            (long)(optionsType.GetProperty("MemoryThresholdBytes")?.GetValue(options)
+                ?? throw new MissingMemberException(optionsType.FullName, "MemoryThresholdBytes"))
+                == 256L * 1024 * 1024,
+            "Streaming threshold was not converted from MiB to bytes.");
+        Assert(
+            Path.GetFullPath((string)(optionsType.GetProperty("TemporaryDirectory")?.GetValue(options)
+                ?? throw new MissingMemberException(optionsType.FullName, "TemporaryDirectory")))
+                == Path.GetFullPath(configuredDirectory),
+            "ANIMESTUDIO_TEMP_DIR did not override the configured temporary directory.");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR", previousDirectory);
+    }
 }
 
 static void VerifyExplicitTypeFilter(string publishDirectory)
