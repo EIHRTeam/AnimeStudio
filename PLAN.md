@@ -1,110 +1,69 @@
-# Current Phase Plan: CLI-only .NET 10 and Container Streaming
+# Current Phase Plan: Container Streaming Acceptance Closure
 
 ## Objective
 
-Remove the retired desktop product and legacy frameworks, then make decompressed
-container data single-copy and disk-backed above 256 MiB. Completion requires
-the known `68B3...chk` input to process without a memory skip and Debian peak RSS
-to remain at or below 10 GiB.
+Close the final Phase 1 output-compatibility gate without misreporting
+non-deterministic output as byte-identical. The CLI-only .NET 10 migration,
+shared container storage, automated tests, and Debian memory gates are
+implemented and passing.
 
-## 1. CLI-only Baseline
+## 1. Preserve Acceptance Evidence
 
-- Delete the GUI, Patcher, `build.ps1`, and the GUI-only workflow.
-- Keep only CLI, Core, Utility, PInvoke, FBXWrapper, and both smoke projects in
-  the solution.
-- Change all managed production projects to the single `net10.0` target.
-- Remove active GUI/net8/net9/Patcher documentation and CI references.
-- Preserve native libraries required by the Windows CLI.
+- Keep the Debian manifests for the original baseline and the fresh streaming
+  export.
+- Record exact counts for common files, path-only differences, and hash-only
+  differences.
+- Do not use the interrupted/resumed export as compatibility evidence because
+  a second run adds another set of random fallback filenames.
 
-Acceptance:
+Current evidence:
 
-- `dotnet build AnimeStudio.sln -c Release` succeeds using only .NET 10.
-- Active files contain no desktop project or net8/net9 build references.
-- All three CLI RID publish smoke tests pass.
+- Both fresh trees contain 77,146 files.
+- 77,020 deterministic files have identical relative paths and SHA256 values.
+- Each tree has 88 JSON files with different fallback names but an identical
+  multiset of content hashes.
+- 38 common-path FBX files differ because the exporter embeds a creation time
+  and generated file identifier.
 
-## 2. Shared Container Storage
+## 2. Resolve the Compatibility Policy
 
-Add:
+The phase cannot be marked complete until one of these policies is explicitly
+adopted:
 
-- `ContainerStorageOptions` with `MemoryThresholdBytes` and
-  `TemporaryDirectory`.
-- `AssetsManager.ContainerStorageOptions`.
-- Internal `SharedBackingStore`.
-- Internal `ReadOnlySliceStream`.
+1. Strict byte identity:
+   - Replace `Path.GetRandomFileName()` export fallbacks with stable names.
+   - Make FBX metadata deterministic.
+   - Establish a new deterministic baseline and require exact tree equality.
+2. Normalized compatibility:
+   - Require exact path and SHA256 equality for deterministic outputs.
+   - Compare random fallback outputs by content-hash multiset.
+   - Compare FBX payloads with volatile metadata normalized.
+   - Track deterministic naming and FBX metadata as a later compatibility
+     work package.
 
-Required behavior:
+The current roadmap keeps non-streaming compatibility work in the final phase,
+so normalized compatibility is the scope-consistent option, but it must not be
+silently substituted for the original strict criterion.
 
-- One backing stream owns each decompressed container.
-- Memory is used below the threshold and a temporary file at or above it.
-- Slices have independent positions, enforce bounds, and are read-only/seekable.
-- Shared reads are synchronized.
-- Reference counting deletes the store after the last slice closes.
-- Failed handoff, cancellation, parse errors, and OOM close unowned slices.
+## 3. Final Phase 1 Checks
 
-## 3. Bundle-family Integration
+After the compatibility policy is resolved:
 
-Integrate Bundle, Mhy, Blb, Hyg, and VFS:
+- Re-run `dotnet build AnimeStudio.sln -c Release`.
+- Re-run Core smoke and all three RID package smoke checks.
+- Run `git diff --check` and the active-file legacy reference scan.
+- Confirm the Debian temporary run directory is empty.
+- Confirm `oom_kill` remains unchanged.
+- Update `STATUS.md` with the accepted policy and final commit.
 
-- Decompress blocks sequentially into `SharedBackingStore`.
-- Replace node MemoryStream copies with `ReadOnlySliceStream`.
-- Keep `StreamFile.stream` unchanged.
-- Continue using existing FileReader, SerializedFile, and ResourceReader paths.
-- Remove avoidable Zstd, UnityWeb, and blocks-info `ToArray()` copies.
-- Do not use `OffsetStream` for node slices.
+## 4. Phase Transition
 
-## 4. Temporary Storage
+Only after the output gate closes:
 
-Add:
+- Mark Phase 1 completed in `STATUS.md` and `ROADMAP.md`.
+- Create `feat/asset-map-streaming`.
+- Replace this file with the detailed AssetMap streaming plan.
 
-```json
-"streaming": {
-  "containerMemoryThresholdMiB": 256,
-  "temporaryDirectory": null
-}
-```
-
-Resolution order:
-
-1. `ANIMESTUDIO_TEMP_DIR`
-2. `appsettings.json`
-3. `$XDG_CACHE_HOME/animestudio/tmp` or `~/.cache/animestudio/tmp`
-4. `%LOCALAPPDATA%/AnimeStudio/Temp`
-
-Use a process run directory and lock file. Require writable storage and
-estimated decompressed size plus 1 GiB free space. Never silently fall back to
-memory. Remove the current run directory after all stores close, and only clean
-stale AnimeStudio directories older than seven days with no active lock.
-
-## 5. Automated Validation
-
-- Test boundaries, independent seeks, interleaved/concurrent reads, reference
-  counting, and final deletion.
-- Test memory and file backings against identical hashes.
-- Test Bundle, Mhy, Blb, Hyg, and VFS node hashes.
-- Test cleanup after exceptions and cancellation.
-- Run Core and CLI smoke tests.
-- Publish and smoke `win-x64`, `linux-x64`, and `osx-arm64`.
-- Run `git diff --check`.
-
-## 6. Debian Acceptance
-
-Server: `1.14.226.195`, Debian 13, .NET SDK 10.0.301.
-
-- Process `68B3B9B8EB82E88FBFE6A313E6B18FB6.chk` with default types:
-  exit 0, no memory skip, no kernel OOM.
-- Process all 31 `.chk` files: exit 0 and no kernel OOM.
-- Peak RSS hard limit: 10 GiB; target: 8 GiB.
-- Export 36 controllers from SHA256
-  `65b72bfe12149339d716919b8379f7e9346b8c7501250bb4a14328d23277df99`.
-- Compare original-parameter relative paths and SHA256 output to baseline.
-- Record time, peak RSS, temporary disk peak, and total writes.
-- Confirm temporary run directories are empty after every run.
-
-## Commit Boundaries
-
-1. `docs: establish plan status and roadmap workflow`
-2. `refactor: remove GUI patcher and legacy target frameworks`
-3. `feat: add shared container backing store and bounded slices`
-4. `feat: stream bundle family entries from shared storage`
-5. `feat: configure and clean container temporary storage`
-6. `test: verify streaming containers and Debian memory regression`
+The next phase will remove the complete `List<AssetEntry>` build, add a
+disk-backed entry spool, stream XML/JSON/MessagePack generation and filtering,
+and preserve or explicitly version each existing map format.

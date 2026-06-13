@@ -18,6 +18,10 @@ Development rules:
 - Finish every development session by recording completed work, validation,
   unresolved work, and follow-up cautions in `STATUS.md`.
 - Do not advance phases until every acceptance criterion in `PLAN.md` passes.
+- When a phase completes, or earlier when implementation risk requires it,
+  agents may run real-machine validation on the authorized Debian 13 test
+  server at `1.14.226.195`. Record commands, metrics, and outcomes in
+  `STATUS.md`; never commit server credentials.
 - The only supported managed target framework is `net10.0`.
 - Do not reintroduce the removed desktop GUI or AppHost patcher.
 - Unity serialized type names containing `GUI`, such as `GUIStyle`, are data

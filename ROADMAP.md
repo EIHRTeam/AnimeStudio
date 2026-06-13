@@ -22,7 +22,7 @@ Status: completed.
 
 ## Phase 1 - CLI-only .NET 10 and Container Streaming
 
-Status: in progress.
+Status: implementation complete; acceptance closure in progress.
 
 Active branch: `feat/container-streaming`.
 
@@ -55,14 +55,19 @@ The detailed implementation and acceptance criteria are in `PLAN.md`.
 - Complete performance baselines, CI gates, and release documentation.
 - Address optimized Animator hierarchies, long output paths, and unsupported
   Shader variants.
+- Make fallback export names and FBX metadata deterministic if strict
+  cross-run tree hashes remain a release requirement.
 
 ## Cross-phase Constraints
 
 - Only `net10.0` is supported.
 - Do not reintroduce the desktop GUI or Patcher.
-- Default container memory threshold is 256 MiB.
+- Default aggregate live-container memory threshold is 256 MiB.
 - Temporary storage must not default to `/tmp` on Debian.
 - Disk failures are explicit errors; they never silently fall back to memory.
 - Output compatibility defaults to relative-path and SHA256 equality.
+- The authorized Debian 13 server at `1.14.226.195` may be used after each
+  phase or whenever real-machine validation is needed. Validation results and
+  metrics belong in `STATUS.md`; credentials must never be committed.
 - `Unknown ClassIDType 1186182244` is outside the streaming roadmap.
 - Every session must update `STATUS.md`.
