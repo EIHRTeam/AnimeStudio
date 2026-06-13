@@ -111,6 +111,7 @@ namespace AnimeStudio
 
         private Game Game;
         private UnityCN UnityCN;
+        private readonly ContainerStorageManager storageManager;
 
         public Header m_Header;
         private List<Node> m_DirectoryInfo;
@@ -122,45 +123,70 @@ namespace AnimeStudio
         private bool HasBlockInfoNeedPaddingAtStart = true;
 
         public BundleFile(FileReader reader, Game game)
+            : this(reader, game, new ContainerStorageManager(new ContainerStorageOptions()), true)
         {
-            Game = game;
-            m_Header = ReadBundleHeader(reader);
-            switch (m_Header.signature)
+        }
+
+        internal BundleFile(FileReader reader, Game game, ContainerStorageManager storageManager)
+            : this(reader, game, storageManager, false)
+        {
+        }
+
+        private BundleFile(
+            FileReader reader,
+            Game game,
+            ContainerStorageManager storageManager,
+            bool ownsStorageManager)
+        {
+            this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            try
             {
-                case "UnityArchive":
-                    break; //TODO
-                case "UnityWeb":
-                case "UnityRaw":
-                    if (m_Header.version == 6)
-                    {
-                        goto case "UnityFS";
-                    }
-                    ReadHeaderAndBlocksInfo(reader);
-                    using (var blocksStream = CreateBlocksStream(reader.FullPath))
-                    {
-                        ReadBlocksAndDirectory(reader, blocksStream);
-                        ReadFiles(blocksStream, reader.FullPath);
-                    }
-                    break;
-                case "UnityFS":
-                case "ENCR":
-                    ReadHeader(reader);
-                    if (game.IsUnityCN())
-                    {
-                        ReadUnityCN(reader);
-                    }
-                    else if(game.Type.IsAzurPromiliaCBT2())
-                    {
-                        UnityCN.SetKey("7a346c32336268352333356826333231");
-                        ReadUnityCN(reader);
-                    }
-                    ReadBlocksInfoAndDirectory(reader);
-                    using (var blocksStream = CreateBlocksStream(reader.FullPath))
-                    {
-                        ReadBlocks(reader, blocksStream);
-                        ReadFiles(blocksStream, reader.FullPath);
-                    }
-                    break;
+                Game = game;
+                m_Header = ReadBundleHeader(reader);
+                switch (m_Header.signature)
+                {
+                    case "UnityArchive":
+                        break; //TODO
+                    case "UnityWeb":
+                    case "UnityRaw":
+                        if (m_Header.version == 6)
+                        {
+                            goto case "UnityFS";
+                        }
+                        ReadHeaderAndBlocksInfo(reader);
+                        using (var blocksStream = CreateBlocksStream(reader.FullPath))
+                        {
+                            ReadBlocksAndDirectory(reader, blocksStream);
+                            ReadFiles(blocksStream);
+                        }
+                        break;
+                    case "UnityFS":
+                    case "ENCR":
+                        ReadHeader(reader);
+                        if (game.IsUnityCN())
+                        {
+                            ReadUnityCN(reader);
+                        }
+                        else if(game.Type.IsAzurPromiliaCBT2())
+                        {
+                            UnityCN.SetKey("7a346c32336268352333356826333231");
+                            ReadUnityCN(reader);
+                        }
+                        ReadBlocksInfoAndDirectory(reader);
+                        using (var blocksStream = CreateBlocksStream(reader.FullPath))
+                        {
+                            ReadBlocks(reader, blocksStream);
+                            ReadFiles(blocksStream);
+                        }
+                        break;
+                }
+            }
+            finally
+            {
+                if (ownsStorageManager)
+                {
+                    storageManager.Dispose();
+                }
             }
         }
 
@@ -258,22 +284,13 @@ namespace AnimeStudio
             reader.Position = m_Header.size;
         }
 
-        private Stream CreateBlocksStream(string path)
+        private SharedBackingStore CreateBlocksStream(string path)
         {
-            Stream blocksStream;
-            var uncompressedSizeSum = m_BlocksInfo.Sum(x => x.uncompressedSize);
+            var uncompressedSizeSum = m_BlocksInfo.Aggregate(
+                0L,
+                (total, block) => checked(total + block.uncompressedSize));
             Logger.Verbose($"Total size of decompressed blocks: {uncompressedSizeSum}");
-            if (uncompressedSizeSum >= int.MaxValue)
-            {
-                /*var memoryMappedFile = MemoryMappedFile.CreateNew(null, uncompressedSizeSum);
-                assetsDataStream = memoryMappedFile.CreateViewStream();*/
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
-            }
-            else
-            {
-                blocksStream = new MemoryStream((int)uncompressedSizeSum);
-            }
-            return blocksStream;
+            return storageManager.Create(uncompressedSizeSum, path);
         }
 
         private void ReadBlocksAndDirectory(FileReader reader, Stream blocksStream)
@@ -287,10 +304,12 @@ namespace AnimeStudio
                 if (isCompressed)
                 {
                     using var memoryStream = new MemoryStream(uncompressedBytes);
-                    using var decompressStream = SevenZipHelper.StreamDecompress(memoryStream);
-                    uncompressedBytes = decompressStream.ToArray();
+                    SevenZipHelper.StreamDecompressWithHeader(memoryStream, blocksStream);
                 }
-                blocksStream.Write(uncompressedBytes, 0, uncompressedBytes.Length);
+                else
+                {
+                    blocksStream.Write(uncompressedBytes);
+                }
             }
             blocksStream.Position = 0;
             var blocksReader = new EndianBinaryReader(blocksStream);
@@ -308,34 +327,10 @@ namespace AnimeStudio
             }
         }
 
-        public void ReadFiles(Stream blocksStream, string path)
+        private void ReadFiles(SharedBackingStore blocksStream)
         {
             Logger.Verbose($"Writing files from blocks stream...");
-
-            fileList = new List<StreamFile>();
-            for (int i = 0; i < m_DirectoryInfo.Count; i++)
-            {
-                var node = m_DirectoryInfo[i];
-                var file = new StreamFile();
-                fileList.Add(file);
-                file.path = node.path;
-                file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    /*var memoryMappedFile = MemoryMappedFile.CreateNew(null, entryinfo_size);
-                    file.stream = memoryMappedFile.CreateViewStream();*/
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                {
-                    file.stream = new MemoryStream((int)node.size);
-                }
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
-            }
+            fileList = ContainerFileStreams.Create(blocksStream, m_DirectoryInfo);
         }
 
         private void ReadHeader(FileReader reader)
@@ -463,36 +458,29 @@ namespace AnimeStudio
                 case CompressionType.Lz4: //LZ4
                 case CompressionType.Lz4HC: //LZ4HC
                     {
-                        var uncompressedBytes = ArrayPool<byte>.Shared.Rent((int)uncompressedSize);
-                        try
+                        var uncompressedBytes = new byte[checked((int)uncompressedSize)];
+                        var uncompressedBytesSpan = uncompressedBytes.AsSpan();
+                        if (Game.Type.IsPerpetualNovelty())
                         {
-                            var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, (int)uncompressedSize);
-                            if (Game.Type.IsPerpetualNovelty())
+                            var key = blocksInfoBytesSpan[1];
+                            for (int j = 0; j < Math.Min(0x32, blocksInfoBytesSpan.Length); j++)
                             {
-                                var key = blocksInfoBytesSpan[1];
-                                for (int j = 0; j < Math.Min(0x32, blocksInfoBytesSpan.Length); j++)
-                                {
-                                    blocksInfoBytesSpan[j] ^= key;
-                                }
+                                blocksInfoBytesSpan[j] ^= key;
                             }
-                            var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
-                            if (numWrite != uncompressedSize)
-                            {
-                                throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                            }
-                            blocksInfoUncompresseddStream = new MemoryStream(uncompressedBytesSpan.ToArray());
                         }
-                        finally
+                        var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
+                        if (numWrite != uncompressedSize)
                         {
-                            ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
+                            throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                         }
+                        blocksInfoUncompresseddStream = new MemoryStream(uncompressedBytes, writable: false);
                         break;
                     }
                 case CompressionType.Lz4Mr0k: //Lz4Mr0k
                     if (Mr0kUtils.IsMr0k(blocksInfoBytesSpan))
                     {
                         Logger.Verbose($"Header encrypted with mr0k, decrypting...");
-                        blocksInfoBytesSpan = Mr0kUtils.Decrypt(blocksInfoBytesSpan, (Mr0k)Game).ToArray();
+                        blocksInfoBytesSpan = Mr0kUtils.Decrypt(blocksInfoBytesSpan, (Mr0k)Game);
                     }
                     goto case CompressionType.Lz4HC;
                 default:
@@ -564,14 +552,22 @@ namespace AnimeStudio
                     case CompressionType.Lzma: //LZMA
                         {
                             var compressedStream = reader.BaseStream;
+                            MemoryStream decryptedStream = null;
                             if (Game.Type.IsNetEase() && i == 0)
                             {
-                                var compressedBytesSpan = reader.ReadBytes((int)blockInfo.compressedSize).AsSpan();
-                                NetEaseUtils.DecryptWithoutHeader(compressedBytesSpan);
-                                var ms = new MemoryStream(compressedBytesSpan.ToArray());
-                                compressedStream = ms;
+                                var compressedBytes = reader.ReadBytes((int)blockInfo.compressedSize);
+                                NetEaseUtils.DecryptWithoutHeader(compressedBytes);
+                                decryptedStream = new MemoryStream(compressedBytes, writable: false);
+                                compressedStream = decryptedStream;
                             }
-                            SevenZipHelper.StreamDecompress(compressedStream, blocksStream, blockInfo.compressedSize, blockInfo.uncompressedSize);
+                            try
+                            {
+                                SevenZipHelper.StreamDecompress(compressedStream, blocksStream, blockInfo.compressedSize, blockInfo.uncompressedSize);
+                            }
+                            finally
+                            {
+                                decryptedStream?.Dispose();
+                            }
                             break;
                         }
                     case CompressionType.OodleHSR:
@@ -805,7 +801,7 @@ namespace AnimeStudio
                                 {
                                     throw new IOException($"Zstd decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                                 }
-                                blocksStream.Write(uncompressedBytes.ToArray(), 0, uncompressedSize);
+                                blocksStream.Write(uncompressedBytes.AsSpan(0, uncompressedSize));
                             }
                             catch (Exception ex) when (ex is not OutOfMemoryException)
                             {

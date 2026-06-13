@@ -12,71 +12,100 @@ namespace AnimeStudio
     {
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
+        private readonly ContainerStorageManager storageManager;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
         public VFSFile(FileReader reader, string path, GameType game)
+            : this(reader, path, game, new ContainerStorageManager(new ContainerStorageOptions()), true)
         {
-            Offset = reader.Position;
-            reader.Endian = EndianType.BigEndian;
+        }
 
+        internal VFSFile(
+            FileReader reader,
+            string path,
+            GameType game,
+            ContainerStorageManager storageManager)
+            : this(reader, path, game, storageManager, false)
+        {
+        }
 
-            if (!VFSUtils.IsValidHeader(reader, game))
+        private VFSFile(
+            FileReader reader,
+            string path,
+            GameType game,
+            ContainerStorageManager storageManager,
+            bool ownsStorageManager)
+        {
+            this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            try
             {
-                throw new Exception("Not a VFS file / VFS version mismatch");
-            }
+                Offset = reader.Position;
+                reader.Endian = EndianType.BigEndian;
 
-            // read header
-            reader.ReadBytes(8);
-            m_Header = VFSUtils.ReadHeader(reader, game);
-            Logger.Verbose($"Header : {m_Header.ToString()}");
+                if (!VFSUtils.IsValidHeader(reader, game))
+                {
+                    throw new Exception("Not a VFS file / VFS version mismatch");
+                }
 
-            // go to blocks info
-            uint blockInfosOffset;
+                // read header
+                reader.ReadBytes(8);
+                m_Header = VFSUtils.ReadHeader(reader, game);
+                Logger.Verbose($"Header : {m_Header.ToString()}");
 
-            if ((m_Header.flags & ArchiveFlags.BlocksInfoAtTheEnd) != 0)
-                blockInfosOffset = (uint)(m_Header.size) - m_Header.compressedBlocksInfoSize;
-            else
-            {
-                if (m_Header.encFlags >= 7)
-                    blockInfosOffset = 48;
+                // go to blocks info
+                uint blockInfosOffset;
+
+                if ((m_Header.flags & ArchiveFlags.BlocksInfoAtTheEnd) != 0)
+                    blockInfosOffset = (uint)(m_Header.size) - m_Header.compressedBlocksInfoSize;
                 else
-                    blockInfosOffset = 40;
+                {
+                    if (m_Header.encFlags >= 7)
+                        blockInfosOffset = 48;
+                    else
+                        blockInfosOffset = 40;
+                }
+
+                reader.Position = Offset + blockInfosOffset;
+                ReadBlocksInfoAndDirectory(reader, game);
+
+                // go to data
+                uint dataOffset;
+
+                if (m_Header.encFlags >= 7)
+                    dataOffset = 48;
+                else
+                    dataOffset = 40;
+                if (((m_Header.flags) & ArchiveFlags.BlocksInfoAtTheEnd) == 0)
+                {
+                    var temp = m_Header.compressedBlocksInfoSize;
+                    if (((m_Header.flags) & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
+                        temp = (temp + 15) & 0xFFFFFFF0;
+                    dataOffset += temp;
+                }
+
+                reader.Position = Offset + dataOffset;
+
+                using var blocksStream = CreateBlocksStream(path);
+                ReadBlocks(reader, blocksStream, game);
+                ReadFiles(blocksStream);
             }
-
-            reader.Position = Offset + blockInfosOffset;
-            ReadBlocksInfoAndDirectory(reader, game);
-
-            // go to data
-            uint dataOffset;
-
-            if (m_Header.encFlags >= 7)
-                dataOffset = 48;
-            else
-                dataOffset = 40;
-            if (((m_Header.flags) & ArchiveFlags.BlocksInfoAtTheEnd) == 0)
+            finally
             {
-                var temp = m_Header.compressedBlocksInfoSize;
-                if (((m_Header.flags) & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
-                    temp = (temp + 15) & 0xFFFFFFF0;
-                dataOffset += temp;
+                if (ownsStorageManager)
+                {
+                    storageManager.Dispose();
+                }
             }
-
-            reader.Position = Offset + dataOffset;
-
-            //
-            using var blocksStream = CreateBlocksStream(path);
-            ReadBlocks(reader, blocksStream, game);
-            ReadFiles(blocksStream, path);
         }
 
         private void ReadBlocksInfoAndDirectory(FileReader reader, GameType game)
         {
             byte[] blocksInfoBytes = reader.ReadBytes((int)m_Header.compressedBlocksInfoSize);
 
-            MemoryStream blocksInfoUncompressedStream = new MemoryStream();
+            MemoryStream blocksInfoUncompressedStream;
             if (((int)m_Header.flags & 0x3F) != 0)
             {
                 // compressed + encrypted
@@ -84,11 +113,10 @@ namespace AnimeStudio
 
                 var uncompressedSize = m_Header.uncompressedBlocksInfoSize;
                 var blocksInfoBytesSpan = blocksInfoBytes.AsSpan(0, blocksInfoBytes.Length);
-                var uncompressedBytes = ArrayPool<byte>.Shared.Rent((int)uncompressedSize);
-
+                var uncompressedBytes = new byte[checked((int)uncompressedSize)];
                 try
                 {
-                    var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, (int)uncompressedSize);
+                    var uncompressedBytesSpan = uncompressedBytes.AsSpan();
                     // normal LZ4
                     var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
 
@@ -96,13 +124,10 @@ namespace AnimeStudio
                     {
                         throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                     }
-                    blocksInfoUncompressedStream = new MemoryStream(uncompressedBytesSpan.ToArray());
+                    blocksInfoUncompressedStream = new MemoryStream(uncompressedBytes, writable: false);
                 } catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     throw new IOException($"Lz4 decompression error {e.Message}");
-                } finally
-                {
-                    ArrayPool<byte>.Shared.Return(uncompressedBytes);
                 }
             } else
             {
@@ -118,16 +143,13 @@ namespace AnimeStudio
             }
         }
 
-        private Stream CreateBlocksStream(string path)
+        private SharedBackingStore CreateBlocksStream(string path)
         {
-            Stream blocksStream;
-            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            var uncompressedSizeSum = m_BlocksInfo.Aggregate(
+                0L,
+                (total, block) => checked(total + block.uncompressedSize));
             Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
-            if (uncompressedSizeSum >= int.MaxValue)
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
-            else
-                blocksStream = new MemoryStream((int)uncompressedSizeSum);
-            return blocksStream;
+            return storageManager.Create(uncompressedSizeSum, path);
         }
 
         private void ReadBlocks(FileReader reader, Stream blocksStream, GameType game)
@@ -185,30 +207,10 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadFiles(Stream blocksStream, string path)
+        private void ReadFiles(SharedBackingStore blocksStream)
         {
             Logger.Verbose($"Writing files from blocks stream...");
-
-            fileList = new List<StreamFile>();
-            for (int i = 0; i < m_DirectoryInfo.Count; i++)
-            {
-                var node = m_DirectoryInfo[i];
-                var file = new StreamFile();
-                fileList.Add(file);
-                file.path = node.path;
-                file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                    file.stream = new MemoryStream((int)node.size);
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
-            }
+            fileList = ContainerFileStreams.Create(blocksStream, m_DirectoryInfo);
         }
     }
 }

@@ -14,6 +14,7 @@ namespace AnimeStudio
         private string signature;
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
+        private readonly ContainerStorageManager storageManager;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
@@ -55,33 +56,58 @@ namespace AnimeStudio
         public long TotalSize => 8 + m_Header.compressedBlocksInfoSize + m_BlocksInfo.Sum((BundleFile.StorageBlock x) => x.compressedSize);
 
         public MhyFile(FileReader reader, Mhy mhy)
+            : this(reader, mhy, new ContainerStorageManager(new ContainerStorageOptions()), true)
         {
-            this.mhy = mhy;
-            Offset = reader.Position;
-            reader.Endian = EndianType.LittleEndian;
+        }
 
-            signature = reader.ReadStringToNull(4);
-            Logger.Verbose($"Parsed signature {signature}");
-            if (signature != "mhy0" && signature != "mhy1")
-                throw new Exception("not a mhy file");
+        internal MhyFile(FileReader reader, Mhy mhy, ContainerStorageManager storageManager)
+            : this(reader, mhy, storageManager, false)
+        {
+        }
 
-            m_Header = new BundleFile.Header
+        private MhyFile(
+            FileReader reader,
+            Mhy mhy,
+            ContainerStorageManager storageManager,
+            bool ownsStorageManager)
+        {
+            this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            try
             {
-                version = 6,
-                unityVersion = "5.x.x",
-                unityRevision = "2017.4.30f1",
-                compressedBlocksInfoSize = reader.ReadUInt32(),
-                flags = (ArchiveFlags)0x43
-            };
-            Logger.Verbose($"Header: {m_Header}");
-            ReadBlocksInfoAndDirectory(reader);
-            using var blocksStream = CreateBlocksStream(reader.FullPath);
-            ReadBlocks(reader, blocksStream);
-            ReadFiles(blocksStream, reader.FullPath);
-            m_Header.size = 8 + m_Header.compressedBlocksInfoSize + m_BlocksInfo.Sum(x => x.compressedSize);
-            while (reader.PeekChar() == '\0')
+                this.mhy = mhy;
+                Offset = reader.Position;
+                reader.Endian = EndianType.LittleEndian;
+
+                signature = reader.ReadStringToNull(4);
+                Logger.Verbose($"Parsed signature {signature}");
+                if (signature != "mhy0" && signature != "mhy1")
+                    throw new Exception("not a mhy file");
+
+                m_Header = new BundleFile.Header
+                {
+                    version = 6,
+                    unityVersion = "5.x.x",
+                    unityRevision = "2017.4.30f1",
+                    compressedBlocksInfoSize = reader.ReadUInt32(),
+                    flags = (ArchiveFlags)0x43
+                };
+                Logger.Verbose($"Header: {m_Header}");
+                ReadBlocksInfoAndDirectory(reader);
+                using var blocksStream = CreateBlocksStream(reader.FullPath);
+                ReadBlocks(reader, blocksStream);
+                ReadFiles(blocksStream);
+                m_Header.size = 8 + m_Header.compressedBlocksInfoSize + m_BlocksInfo.Sum(x => x.compressedSize);
+                while (reader.PeekChar() == '\0')
+                {
+                    reader.Position++;
+                }
+            }
+            finally
             {
-                reader.Position++;
+                if (ownsStorageManager)
+                {
+                    storageManager.Dispose();
+                }
             }
         }
 
@@ -156,16 +182,13 @@ namespace AnimeStudio
             }    
         }
 
-        private Stream CreateBlocksStream(string path)
+        private SharedBackingStore CreateBlocksStream(string path)
         {
-            Stream blocksStream;
-            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            var uncompressedSizeSum = m_BlocksInfo.Aggregate(
+                0L,
+                (total, block) => checked(total + block.uncompressedSize));
             Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
-            if (uncompressedSizeSum >= int.MaxValue)
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
-            else
-                blocksStream = new MemoryStream((int)uncompressedSizeSum);
-            return blocksStream;
+            return storageManager.Create(uncompressedSizeSum, path);
         }
 
         private void ReadBlocks(EndianBinaryReader reader, Stream blocksStream)
@@ -231,30 +254,10 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadFiles(Stream blocksStream, string path)
+        private void ReadFiles(SharedBackingStore blocksStream)
         {
             Logger.Verbose($"Writing files from blocks stream...");
-
-            fileList = new List<StreamFile>();
-            for (int i = 0; i < m_DirectoryInfo.Count; i++)
-            {
-                var node = m_DirectoryInfo[i];
-                var file = new StreamFile();
-                fileList.Add(file);
-                file.path = node.path;
-                file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                    file.stream = new MemoryStream((int)node.size);
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
-            }
+            fileList = ContainerFileStreams.Create(blocksStream, m_DirectoryInfo);
         }
 
         #region Scramble

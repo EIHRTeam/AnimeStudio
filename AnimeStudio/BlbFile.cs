@@ -13,47 +13,72 @@ namespace AnimeStudio
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
         private byte[] Header;
+        private readonly ContainerStorageManager storageManager;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
         public Blb3File(FileReader reader, string path)
+            : this(reader, path, new ContainerStorageManager(new ContainerStorageOptions()), true)
         {
-            // normal blb3 init
-            BlbUtils.InitKeys(CryptoHelper.Blb3RC4Key, CryptoHelper.Blb3SBox, CryptoHelper.Blb3ShiftRow, CryptoHelper.Blb3Key, CryptoHelper.Blb3Mul);
+        }
 
-            Offset = reader.Position;
-            reader.Endian = EndianType.LittleEndian;
+        internal Blb3File(FileReader reader, string path, ContainerStorageManager storageManager)
+            : this(reader, path, storageManager, false)
+        {
+        }
 
-            var signature = reader.ReadStringToNull(4);
-            Logger.Verbose($"Parsed signature {signature}");
-            if (signature != "Blb\x03")
-                throw new Exception("not a Blb3 file");
-
-            var size = reader.ReadUInt32();
-            m_Header = new BundleFile.Header
+        private Blb3File(
+            FileReader reader,
+            string path,
+            ContainerStorageManager storageManager,
+            bool ownsStorageManager)
+        {
+            this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            try
             {
-                version = 6,
-                unityVersion = "5.x.x",
-                unityRevision = "2017.4.30f1",
-                flags = 0
-            };
-            m_Header.compressedBlocksInfoSize = size;
-            m_Header.uncompressedBlocksInfoSize = size;
+                BlbUtils.InitKeys(CryptoHelper.Blb3RC4Key, CryptoHelper.Blb3SBox, CryptoHelper.Blb3ShiftRow, CryptoHelper.Blb3Key, CryptoHelper.Blb3Mul);
 
-            Logger.Verbose($"Header: {m_Header}");
-            reader.ReadUInt32();
-            Header = reader.ReadBytes(16);
+                Offset = reader.Position;
+                reader.Endian = EndianType.LittleEndian;
 
-            var header = reader.ReadBytes((int)m_Header.compressedBlocksInfoSize);
+                var signature = reader.ReadStringToNull(4);
+                Logger.Verbose($"Parsed signature {signature}");
+                if (signature != "Blb\x03")
+                    throw new Exception("not a Blb3 file");
 
-            BlbUtils.Decrypt(Header, header);
+                var size = reader.ReadUInt32();
+                m_Header = new BundleFile.Header
+                {
+                    version = 6,
+                    unityVersion = "5.x.x",
+                    unityRevision = "2017.4.30f1",
+                    flags = 0
+                };
+                m_Header.compressedBlocksInfoSize = size;
+                m_Header.uncompressedBlocksInfoSize = size;
 
-            ReadBlocksInfoAndDirectory(header);
-            using var blocksStream = CreateBlocksStream(path);
-            ReadBlocks(reader, blocksStream);
-            ReadFiles(blocksStream, path);
+                Logger.Verbose($"Header: {m_Header}");
+                reader.ReadUInt32();
+                Header = reader.ReadBytes(16);
+
+                var header = reader.ReadBytes((int)m_Header.compressedBlocksInfoSize);
+
+                BlbUtils.Decrypt(Header, header);
+
+                ReadBlocksInfoAndDirectory(header);
+                using var blocksStream = CreateBlocksStream(path);
+                ReadBlocks(reader, blocksStream);
+                ReadFiles(blocksStream);
+            }
+            finally
+            {
+                if (ownsStorageManager)
+                {
+                    storageManager.Dispose();
+                }
+            }
         }
 
         private void ReadBlocksInfoAndDirectory(byte[] header)
@@ -130,16 +155,13 @@ namespace AnimeStudio
             }
         }
 
-        private Stream CreateBlocksStream(string path)
+        private SharedBackingStore CreateBlocksStream(string path)
         {
-            Stream blocksStream;
-            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            var uncompressedSizeSum = m_BlocksInfo.Aggregate(
+                0L,
+                (total, block) => checked(total + block.uncompressedSize));
             Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
-            if (uncompressedSizeSum >= int.MaxValue)
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
-            else
-                blocksStream = new MemoryStream((int)uncompressedSizeSum);
-            return blocksStream;
+            return storageManager.Create(uncompressedSizeSum, path);
         }
 
         private void ReadBlocks(FileReader reader, Stream blocksStream)
@@ -237,30 +259,10 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadFiles(Stream blocksStream, string path)
+        private void ReadFiles(SharedBackingStore blocksStream)
         {
             Logger.Verbose($"Writing files from blocks stream...");
-
-            fileList = new List<StreamFile>();
-            for (int i = 0; i < m_DirectoryInfo.Count; i++)
-            {
-                var node = m_DirectoryInfo[i];
-                var file = new StreamFile();
-                fileList.Add(file);
-                file.path = node.path;
-                file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                    file.stream = new MemoryStream((int)node.size);
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
-            }
+            fileList = ContainerFileStreams.Create(blocksStream, m_DirectoryInfo);
         }
     }
 }

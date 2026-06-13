@@ -303,25 +303,34 @@ namespace AnimeStudio.CLI
         private static int ExtractStreamFile(string extractPath, List<StreamFile> fileList)
         {
             int extractedCount = 0;
-            foreach (var file in fileList)
+            try
             {
-                var filePath = Path.Combine(extractPath, file.path);
-                var fileDirectory = Path.GetDirectoryName(filePath);
-                if (!Directory.Exists(fileDirectory))
+                foreach (var file in fileList)
                 {
-                    Directory.CreateDirectory(fileDirectory);
-                }
-                if (!File.Exists(filePath))
-                {
-                    using (var fileStream = File.Create(filePath))
+                    var filePath = Path.Combine(extractPath, file.path);
+                    var fileDirectory = Path.GetDirectoryName(filePath);
+                    if (!Directory.Exists(fileDirectory))
                     {
-                        file.stream.CopyTo(fileStream);
+                        Directory.CreateDirectory(fileDirectory);
                     }
-                    extractedCount += 1;
+                    if (!File.Exists(filePath))
+                    {
+                        using (var fileStream = File.Create(filePath))
+                        {
+                            file.stream.CopyTo(fileStream);
+                        }
+                        extractedCount += 1;
+                    }
                 }
-                file.stream.Dispose();
+                return extractedCount;
             }
-            return extractedCount;
+            finally
+            {
+                foreach (var file in fileList)
+                {
+                    file.stream?.Dispose();
+                }
+            }
         }
 
         public static void UpdateContainers()

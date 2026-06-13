@@ -18,6 +18,7 @@ namespace AnimeStudio
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
         public int LargeObjectHeapCompactionInterval { get; set; }
+        public ContainerStorageOptions ContainerStorageOptions { get; set; } = new ContainerStorageOptions();
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
@@ -64,6 +65,12 @@ namespace AnimeStudio
 
         public Dictionary<string, List<long>> OffsetData = new();
         private int clearCount;
+        private ContainerStorageManager containerStorageManager;
+
+        private ContainerStorageManager GetContainerStorageManager()
+        {
+            return containerStorageManager ??= new ContainerStorageManager(ContainerStorageOptions);
+        }
 
         public void LoadFiles(params string[] files)
         {
@@ -295,11 +302,17 @@ namespace AnimeStudio
                 catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     Logger.Error($"Error while reading assets file {reader.FullPath} from {Path.GetFileName(originalPath)}", e);
-                    resourceFileReaders.TryAdd(reader.FileName, reader);
+                    if (!resourceFileReaders.TryAdd(reader.FileName, reader))
+                    {
+                        reader.Dispose();
+                    }
                 }
             }
             else
+            {
                 Logger.Info($"Skipping {originalPath} ({reader.FileName})");
+                reader.Dispose();
+            }
         }
 
         private void LoadWebFile(FileReader reader)
@@ -325,7 +338,10 @@ namespace AnimeStudio
                             break;
                         case FileType.ResourceFile:
                             Logger.Verbose("Caching resource stream");
-                            resourceFileReaders.TryAdd(file.fileName, subReader); //TODO
+                            if (!resourceFileReaders.TryAdd(file.fileName, subReader))
+                            {
+                                subReader.Dispose();
+                            }
                             break;
                     }
                 }
@@ -418,7 +434,10 @@ namespace AnimeStudio
                             {
                                 entryReader.Position = 0;
                                 Logger.Verbose("Caching resource file");
-                                resourceFileReaders.TryAdd(entry.Name, entryReader);
+                                if (!resourceFileReaders.TryAdd(entry.Name, entryReader))
+                                {
+                                    entryReader.Dispose();
+                                }
                             }
                         }
                         catch (Exception e) when (e is not OutOfMemoryException)
@@ -502,6 +521,7 @@ namespace AnimeStudio
             {
                 Logger.Info("Loading " + reader.FullPath);
             }
+            List<StreamFile> innerFiles = null;
             try
             {
                 dynamic file = null;
@@ -510,38 +530,56 @@ namespace AnimeStudio
                 {
                     case FileType.ENCRFile:
                     case FileType.BundleFile:
-                        file = new BundleFile(reader, Game);
+                        file = new BundleFile(reader, Game, GetContainerStorageManager());
                         break;
                     case FileType.Blb3File:
-                        file = new Blb3File(reader, reader.FullPath);
+                        file = new Blb3File(reader, reader.FullPath, GetContainerStorageManager());
                         break;
                     case FileType.MhyFile:
-                        file = new MhyFile(reader, (Mhy)Game);
+                        file = new MhyFile(reader, (Mhy)Game, GetContainerStorageManager());
                         break;
                     case FileType.HygFile:
-                        file = new HygFile(reader, reader.FullPath);
+                        file = new HygFile(reader, reader.FullPath, GetContainerStorageManager());
                         break;
                     case FileType.VFSFile:
-                        file = new VFSFile(reader, reader.FullPath, Game.Type);
+                        file = new VFSFile(reader, reader.FullPath, Game.Type, GetContainerStorageManager());
                         break;
                 }
 
                 if (file == null)
                     throw new Exception("Unsupported game block file type");
 
+                innerFiles = file.fileList;
                 Logger.Verbose($"file total size: {file.m_Header.size:X8}");
-                foreach (var innerFile in file.fileList)
+                foreach (var innerFile in innerFiles)
                 {
-                    var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
-                    var cabReader = new FileReader(dummyPath, innerFile.stream);
-                    if (cabReader.FileType == FileType.AssetsFile)
+                    var stream = innerFile.stream;
+                    innerFile.stream = null;
+                    FileReader cabReader = null;
+                    try
                     {
-                        LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
+                        var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
+                        cabReader = new FileReader(dummyPath, stream);
+                        stream = null;
+                        if (cabReader.FileType == FileType.AssetsFile)
+                        {
+                            LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
+                            cabReader = null;
+                        }
+                        else
+                        {
+                            Logger.Verbose("Caching resource stream");
+                            if (!resourceFileReaders.TryAdd(innerFile.fileName, cabReader))
+                            {
+                                cabReader.Dispose();
+                            }
+                            cabReader = null;
+                        }
                     }
-                    else
+                    finally
                     {
-                        Logger.Verbose("Caching resource stream");
-                        resourceFileReaders.TryAdd(innerFile.fileName, cabReader); //TODO
+                        cabReader?.Dispose();
+                        stream?.Dispose();
                     }
                 }
             }
@@ -580,6 +618,14 @@ namespace AnimeStudio
             }
             finally
             {
+                if (innerFiles != null)
+                {
+                    foreach (var innerFile in innerFiles)
+                    {
+                        innerFile.stream?.Dispose();
+                        innerFile.stream = null;
+                    }
+                }
                 reader.Dispose();
             }
         }
@@ -613,6 +659,9 @@ namespace AnimeStudio
                 resourceFileReader.Value.Close();
             }
             resourceFileReaders.Clear();
+
+            containerStorageManager?.Dispose();
+            containerStorageManager = null;
 
             assetsFileIndexCache.Clear();
             importFiles.Clear();
