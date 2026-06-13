@@ -26,6 +26,9 @@ try
         VerifyScrapeChunkMerge(publishDirectory);
         VerifyAclResultValidation(publishDirectory);
         VerifyFmodAudioConversion(publishDirectory, rid);
+        VerifyFbxNativeSupport(publishDirectory);
+        VerifyFbxFailureCleanup(publishDirectory);
+        VerifyOptimizedAnimatorGuard(publishDirectory);
 
         if (rid == "win-x64")
         {
@@ -403,6 +406,123 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
     {
         Assert(!packageFiles.Contains(file), $"Foreign native file was published for {rid}: {file}");
     }
+}
+
+static void VerifyFbxNativeSupport(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var utilityAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.Utility.dll"));
+    var capabilitiesType = RequireType(utilityAssembly, "AnimeStudio.PlatformCapabilities");
+    var supportMethod = capabilitiesType.GetMethod(
+        "TryGetFbxExportSupport",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(
+            capabilitiesType.FullName,
+            "TryGetFbxExportSupport");
+    object?[] arguments = [null];
+
+    Assert(
+        (bool)supportMethod.Invoke(null, arguments)!,
+        $"FBXNative capability failed: {arguments[0]}");
+}
+
+static void VerifyFbxFailureCleanup(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var wrapperAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.FBXWrapper.dll"));
+    var coreAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.dll"));
+    var exporterContextType = RequireType(
+        wrapperAssembly,
+        "AnimeStudio.FbxInterop.FbxExporterContext");
+    var disposeMethod = exporterContextType.GetMethod(
+        "Dispose",
+        BindingFlags.Instance | BindingFlags.NonPublic,
+        [typeof(bool)])
+        ?? throw new MissingMethodException(exporterContextType.FullName, "Dispose");
+    var partialContext = RuntimeHelpers.GetUninitializedObject(exporterContextType);
+
+    disposeMethod.Invoke(partialContext, [false]);
+    disposeMethod.Invoke(partialContext, [false]);
+
+    var fbxType = RequireType(wrapperAssembly, "AnimeStudio.Fbx");
+    var exporterType = fbxType.GetNestedType("Exporter", BindingFlags.Public)
+        ?? throw new MissingMemberException(fbxType.FullName, "Exporter");
+    var exportOptionsType = fbxType.GetNestedType("ExportOptions", BindingFlags.Public)
+        ?? throw new MissingMemberException(fbxType.FullName, "ExportOptions");
+    var importedType = RequireType(coreAssembly, "AnimeStudio.IImported");
+    var exportMethod = exporterType.GetMethod(
+        "Export",
+        BindingFlags.Public | BindingFlags.Static,
+        [typeof(string), importedType, exportOptionsType])
+        ?? throw new MissingMethodException(exporterType.FullName, "Export");
+    var options = Activator.CreateInstance(exportOptionsType)
+        ?? throw new InvalidOperationException("Unable to create FBX export options.");
+    var originalDirectory = Directory.GetCurrentDirectory();
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-fbx-cleanup-{Guid.NewGuid():N}");
+
+    try
+    {
+        try
+        {
+            exportMethod.Invoke(
+                null,
+                [Path.Combine(temporaryDirectory, "failure.fbx"), null, options]);
+            throw new InvalidOperationException("FBX export unexpectedly accepted a null model.");
+        }
+        catch (TargetInvocationException)
+        {
+        }
+
+        Assert(
+            Directory.GetCurrentDirectory() == originalDirectory,
+            "FBX export failure did not restore the working directory.");
+    }
+    finally
+    {
+        Directory.SetCurrentDirectory(originalDirectory);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyOptimizedAnimatorGuard(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var coreAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.dll"));
+    var exporterType = RequireType(cliAssembly, "AnimeStudio.CLI.Exporter");
+    var animatorType = RequireType(coreAssembly, "AnimeStudio.Animator");
+    var supportMethod = exporterType.GetMethod(
+        "TryGetAnimatorConversionSupport",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(
+            exporterType.FullName,
+            "TryGetAnimatorConversionSupport");
+    var animator = RuntimeHelpers.GetUninitializedObject(animatorType);
+    RequireField(animatorType, "m_HasTransformHierarchy").SetValue(animator, false);
+    object?[] arguments = [animator, null];
+
+    Assert(
+        !(bool)supportMethod.Invoke(null, arguments)!,
+        "Optimized Animator without an Avatar was accepted.");
+    Assert(
+        arguments[1] is string reason && reason.Contains("Avatar", StringComparison.Ordinal),
+        "Optimized Animator rejection did not explain the missing Avatar.");
+
+    RequireField(animatorType, "m_HasTransformHierarchy").SetValue(animator, true);
+    arguments = [animator, null];
+    Assert(
+        (bool)supportMethod.Invoke(null, arguments)!,
+        "Animator with a transform hierarchy was rejected.");
 }
 
 static void VerifyFmodAudioConversion(string publishDirectory, string rid)

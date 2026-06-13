@@ -38,17 +38,22 @@ namespace AnimeStudio
                 }
 
                 var currentDir = Directory.GetCurrentDirectory();
-                Directory.SetCurrentDirectory(dir.FullName);
-
-                var name = Path.GetFileName(path);
-
-                using (var exporter = new FbxExporter(name, imported, exportOptions))
+                try
                 {
-                    exporter.Initialize();
-                    exporter.ExportAll();
-                }
+                    Directory.SetCurrentDirectory(dir.FullName);
 
-                Directory.SetCurrentDirectory(currentDir);
+                    var name = Path.GetFileName(path);
+
+                    using (var exporter = new FbxExporter(name, imported, exportOptions))
+                    {
+                        exporter.Initialize();
+                        exporter.ExportAll();
+                    }
+                }
+                finally
+                {
+                    Directory.SetCurrentDirectory(currentDir);
+                }
             }
         }
 

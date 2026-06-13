@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace AnimeStudio.FbxInterop
 {
@@ -10,22 +11,24 @@ namespace AnimeStudio.FbxInterop
     {
 
         private IntPtr _pContext;
-        private readonly Dictionary<ImportedFrame, IntPtr> _frameToNode;
-        private readonly List<KeyValuePair<string, IntPtr>> _createdMaterials;
-        private readonly Dictionary<string, IntPtr> _createdTextures;
+        private readonly Dictionary<ImportedFrame, IntPtr> _frameToNode = new();
+        private readonly List<KeyValuePair<string, IntPtr>> _createdMaterials = new();
+        private readonly Dictionary<string, IntPtr> _createdTextures = new();
         private readonly Fbx.ExportOptions _exportOptions;
         private readonly string _exportDirectory;
+        private int _disposeState;
 
 
         public FbxExporterContext(Fbx.ExportOptions exportOptions, string exportDirectory)
         {
-            Fbx.QuaternionToEuler(Quaternion.Zero); // workaround to init dll
-            _pContext = AsFbxCreateContext();
-            _frameToNode = new Dictionary<ImportedFrame, IntPtr>();
-            _createdMaterials = new List<KeyValuePair<string, IntPtr>>();
-            _createdTextures = new Dictionary<string, IntPtr>();
             _exportOptions = exportOptions;
             _exportDirectory = exportDirectory;
+            Fbx.QuaternionToEuler(Quaternion.Zero); // workaround to init dll
+            _pContext = AsFbxCreateContext();
+            if (_pContext == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("FBXNative returned a null exporter context.");
+            }
         }
 
         ~FbxExporterContext()
@@ -42,26 +45,27 @@ namespace AnimeStudio.FbxInterop
 
         public void Dispose()
         {
-            if (IsDisposed)
-            {
-                return;
-            }
-
             Dispose(true);
             GC.SuppressFinalize(this);
         }
 
-        public bool IsDisposed { get; private set; }
+        public bool IsDisposed => Volatile.Read(ref _disposeState) != 0;
 
         private void Dispose(bool disposing)
         {
-            IsDisposed = true;
+            if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            {
+                return;
+            }
 
-            _frameToNode.Clear();
-            _createdMaterials.Clear();
-            _createdTextures.Clear();
+            _frameToNode?.Clear();
+            _createdMaterials?.Clear();
+            _createdTextures?.Clear();
 
-            AsFbxDisposeContext(ref _pContext);
+            if (_pContext != IntPtr.Zero)
+            {
+                AsFbxDisposeContext(ref _pContext);
+            }
         }
 
         private void EnsureNotDisposed()

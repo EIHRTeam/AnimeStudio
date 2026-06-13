@@ -1,6 +1,7 @@
 ﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -1111,7 +1112,8 @@ namespace AnimeStudio
         private void DeoptimizeTransformHierarchy()
         {
             if (avatar == null)
-                throw new Exception("Transform hierarchy has been optimized, but can't find Avatar to deoptimize.");
+                throw new InvalidDataException(
+                    "Transform hierarchy has been optimized, but its Avatar is unavailable.");
             // 1. Figure out the skeletonPaths from the unstripped avatar
             var skeletonPaths = new List<string>();
             foreach (var id in avatar.m_Avatar.m_AvatarSkeleton.m_ID)
