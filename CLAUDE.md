@@ -22,6 +22,14 @@ dotnet build AnimeStudio.sln -c Release
 dotnet run --project scripts/AnimeStudio.Core.Smoke -c Release
 ```
 
+On Linux x64, build and verify a formal release package from the repository
+root with:
+
+```bash
+./build-linux-release.sh
+./build-linux-release.sh --version 1.2.3 --deb
+```
+
 Publish packages with `scripts/publish-cli.sh` or
 `scripts/publish-cli.ps1`. Supported RIDs are `win-x64`, `linux-x64`, and
 `osx-arm64`.
@@ -44,6 +52,12 @@ The Debian 13 test server at `1.14.226.195` is authorized for real-machine
 validation after a phase completes or whenever implementation risk warrants
 earlier testing. Record the commands, peak resource metrics, and outcomes in
 `STATUS.md`; do not store server credentials in repository files.
+
+The normal server delivery path is: commit locally, push the active branch to
+GitHub, then fetch and check out the exact commit on the server. Use direct
+archive or file transfer only when GitHub is unavailable or diagnostic changes
+are not ready to commit. Record that exception and its reason in `STATUS.md`;
+it is not release provenance.
 
 Output compatibility checks must report non-determinism explicitly. Long-path
 fallback exports currently use `Path.GetRandomFileName()`, and FBX files embed

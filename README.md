@@ -14,6 +14,16 @@ dotnet restore AnimeStudio.sln
 dotnet build AnimeStudio.sln -c Release
 ```
 
+For a verified Linux x64 release archive:
+
+```bash
+./build-linux-release.sh
+```
+
+Use `--version <version>`, `--output-dir <path>`, and `--deb` as needed. The
+script builds the solution, runs smoke tests, publishes for `linux-x64`, checks
+the native-library layout and dependencies, and prints the archive SHA256.
+
 ## Usage
 
 ```bash

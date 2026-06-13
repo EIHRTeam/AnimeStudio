@@ -22,6 +22,11 @@ Development rules:
   agents may run real-machine validation on the authorized Debian 13 test
   server at `1.14.226.195`. Record commands, metrics, and outcomes in
   `STATUS.md`; never commit server credentials.
+- When transferring code for remote validation, prefer committing locally,
+  pushing the branch to GitHub, and fetching or checking out the exact commit
+  on the server. Direct archive or file transfer is only a fallback when
+  GitHub is unavailable or the work is not ready to commit; record the reason
+  in `STATUS.md` and do not treat that transfer as release provenance.
 - The only supported managed target framework is `net10.0`.
 - Do not reintroduce the removed desktop GUI or AppHost patcher.
 - Unity serialized type names containing `GUI`, such as `GUIStyle`, are data

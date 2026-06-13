@@ -69,5 +69,9 @@ The detailed implementation and acceptance criteria are in `PLAN.md`.
 - The authorized Debian 13 server at `1.14.226.195` may be used after each
   phase or whenever real-machine validation is needed. Validation results and
   metrics belong in `STATUS.md`; credentials must never be committed.
+- Remote validation code should be committed and pushed to GitHub first, then
+  fetched and checked out by exact branch or commit on the server. Direct file
+  transfer is an exception for GitHub outages or uncommittable diagnostic work
+  and its reason must be recorded in `STATUS.md`.
 - `Unknown ClassIDType 1186182244` is outside the streaming roadmap.
 - Every session must update `STATUS.md`.

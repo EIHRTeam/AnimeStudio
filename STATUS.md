@@ -38,3 +38,14 @@
 - 未完成事项：明确 strict byte identity 与 normalized compatibility 的验收政策；在政策关闭前 Phase 1 不切换到 AssetMap streaming。
 - 后续注意事项：10 GiB 硬门槛已通过，但 8 GiB 目标未达到；全目录仅余约 282 MiB 余量，后续改动必须继续实机回归。`MessagePack` 3.1.4 的 NU1903 仍为已知警告。`Unknown ClassIDType 1186182244` 继续按 Roadmap 排除。
 - 起止提交：`3831a82` -> `cf1ad70`（另含本会话文档收尾提交）。
+
+### 会话 2026-06-14-02
+
+- 本次目标：修复原参数批量导出中的优化 Animator 缺失 Avatar、无 RID publish 缺少 Linux FBXNative，以及半构造 FBX 上下文终结器崩溃。
+- 完成内容：已实现优化 Animator 缺失 Avatar 的导出前置跳过、Linux FBXNative 发布能力探测、半构造 FBX 上下文和导出器的幂等清理、FBX 失败时当前目录恢复；新增 Linux x64 正式发布构建脚本及对应 smoke。服务器 GitHub 拉取后的最终验证进行中。
+- 修改文件/接口：更新 `Exporter`、`PlatformCapabilities`、`ModelConverter`、`FbxExporterContext`、`FbxExporter`、`Fbx` 和 CLI smoke；新增根目录 `build-linux-release.sh`；更新 `AGENTS.md`、`ROADMAP.md`、`CLAUDE.md`，要求远程验证优先通过 GitHub 精确提交交付。
+- 验证及指标：本地 Release 构建、Core smoke、三 RID 发布与静态 smoke、macOS ARM64 动态原生 smoke、脚本语法和 `git diff --check` 已通过。Debian 临时源副本构建已通过，生成归档 SHA256 `6b0f57a660efde928d53901e5de6dac63ade304d77b1ca3a38c10f75e4d65a84`；触发文件定向回归退出码 0，耗时 106.62 秒，峰值 RSS 3,218,924 KiB，临时目录清空，缺失 Avatar 变为受控警告，另一 Animator 成功生成两个 FBX，未出现 FBXNative、终结器、Unhandled exception 或 Aborted。
+- 问题与决策：缺失 Avatar 属于单资产数据不完整，应受控跳过；仓库已有 Linux FBXNative，问题是无 RID publish 未复制；原生加载失败不得由终结器二次异常终止进程。上述首轮服务器验证在新增 GitHub 优先规则前通过临时归档传输，用于诊断而非发布溯源；最终验收必须从 GitHub 拉取精确提交重跑。
+- 未完成事项：提交并推送当前分支，由服务器从 GitHub 拉取精确提交后重跑正式构建和定向原命令回归。
+- 后续注意事项：保持单对象失败继续批处理；不得通过吞掉所有 native 异常掩盖发布包缺文件；远程代码交付默认走 GitHub，直传例外必须记录原因。
+- 起止提交：`4f0ca6b` -> 进行中。
