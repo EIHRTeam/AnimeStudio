@@ -1,3 +1,6 @@
+> Historical document. Current sources of truth are `/ROADMAP.md`, `/PLAN.md`,
+> and `/STATUS.md`.
+
 # AnimeStudio CLI — Debian 13 兼容性分析报告
 
 > **基线**: Debian 13 "Trixie" (glibc 2.41, OpenSSL 3.4)  
