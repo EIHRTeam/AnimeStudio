@@ -181,19 +181,27 @@ namespace AnimeStudio
             }
         }
 
-        private static IEnumerable<string> LoadFiles(string[] files)
+        private static IEnumerable<string> LoadFiles(
+            string[] files,
+            AssetMapBuildMetrics assetMapMetrics = null)
         {
             string msg;
-            
-            var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
-            ImportHelper.MergeSplitAssets(path);
-            var toReadFile = ImportHelper.ProcessingSplitFiles(files.ToList());
+            string[] toReadFile;
+            using (assetMapMetrics?.Measure(AssetMapBuildStage.Loading))
+            {
+                var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
+                ImportHelper.MergeSplitAssets(path);
+                toReadFile = ImportHelper.ProcessingSplitFiles(files.ToList());
+            }
 
             var filesList = new List<string>(toReadFile);
             for (int i = 0; i < filesList.Count; i++)
             {
                 var file = filesList[i];
-                assetsManager.LoadFiles(file);
+                using (assetMapMetrics?.Measure(AssetMapBuildStage.Loading))
+                {
+                    assetsManager.LoadFiles(file);
+                }
                 if (assetsManager.assetsFileList.Count > 0)
                 {
                     yield return file;
@@ -327,24 +335,40 @@ namespace AnimeStudio
                 };
                 CABMap.Add(cab, entry);
             }
-        } 
+        }
 
         public static async Task BuildAssetMap(string[] files, string mapName, Game game, string savePath, ExportListType exportListType, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
         {
             Logger.Info("Building AssetMap...");
+            var metrics = new AssetMapBuildMetrics();
+            var assets = new List<AssetEntry>();
             try
             {
                 Progress.Reset();
                 assetsManager.Game = game;
-                var assets = new List<AssetEntry>();
-                foreach (var file in LoadFiles(files))
+                foreach (var file in LoadFiles(files, metrics))
                 {
-                    BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters);
+                    BuildAssetMap(
+                        file,
+                        assets,
+                        metrics,
+                        typeFilters,
+                        nameFilters,
+                        containerFilters);
                 }
 
-                UpdateContainers(assets, game);
+                using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                {
+                    UpdateContainers(assets, game);
+                }
 
-                await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
+                await ExportAssetsMap(
+                    assets,
+                    game,
+                    mapName,
+                    savePath,
+                    exportListType,
+                    metrics);
             }
             catch(Exception e)
             {
@@ -352,17 +376,26 @@ namespace AnimeStudio
             }
             finally
             {
+                metrics.LogSummary(assets.Count);
                 StringCache.Clear();
             }
         }
 
-        private static void BuildAssetMap(string file, List<AssetEntry> assets, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
+        private static void BuildAssetMap(
+            string file,
+            List<AssetEntry> assets,
+            AssetMapBuildMetrics metrics,
+            ClassIDType[] typeFilters = null,
+            Regex[] nameFilters = null,
+            Regex[] containerFilters = null)
         {
             var matches = new List<AssetEntry>();
             var containers = new List<(PPtr<Object>, string)>();
             var mihoyoBinDataNames = new List<(PPtr<Object>, string)>();
             var objectAssetItemDic = new Dictionary<Object, AssetEntry>();
             var animators = new List<(PPtr<Object>, AssetEntry)>();
+            using var objectScanningMeasurement =
+                metrics.Measure(AssetMapBuildStage.ObjectScanning);
             foreach (var assetsFile in assetsManager.assetsFileList)
             {
                 foreach (var objInfo in assetsFile.m_Objects)
@@ -530,7 +563,10 @@ namespace AnimeStudio
                     objectAssetItemDic[obj].Container = container;
                 }
             }
+            objectScanningMeasurement.Dispose();
 
+            using var filteringMeasurement =
+                metrics.Measure(AssetMapBuildStage.FilteringAndSpooling);
             assets.AddRange(matches.Where(x =>
             {
                 var isMatchRegex = nameFilters.IsNullOrEmpty() || nameFilters.Any(y => y.IsMatch(x.Name));
@@ -538,6 +574,7 @@ namespace AnimeStudio
                 var isContainerMatch = containerFilters.IsNullOrEmpty() || containerFilters.Any(y => y.IsMatch(x.Container));
                 return isMatchRegex && isFilteredType && isContainerMatch;
             }));
+            filteringMeasurement.Dispose();
         }
 
         public static string[] ParseAssetMap(string mapName, ExportListType mapType, ClassIDType[] typeFilter, Regex[] nameFilter, Regex[] containerFilter)
@@ -665,7 +702,13 @@ namespace AnimeStudio
             }
         }
 
-        internal static Task ExportAssetsMap(List<AssetEntry> toExportAssets, Game game, string name, string savePath, ExportListType exportListType)
+        internal static Task ExportAssetsMap(
+            List<AssetEntry> toExportAssets,
+            Game game,
+            string name,
+            string savePath,
+            ExportListType exportListType,
+            AssetMapBuildMetrics metrics = null)
         {
             return Task.Run(() =>
             {
@@ -682,6 +725,8 @@ namespace AnimeStudio
                 {
                     if (exportListType.HasFlag(ExportListType.XML))
                     {
+                        using var xmlWritingMeasurement =
+                            metrics?.Measure(AssetMapBuildStage.XmlWriting);
                         filename = Path.Combine(savePath, $"{name}.xml");
                         var xmlSettings = new XmlWriterSettings() { Indent = true };
                         using XmlWriter writer = XmlWriter.Create(filename, xmlSettings);
@@ -707,6 +752,8 @@ namespace AnimeStudio
                     }
                     if (exportListType.HasFlag(ExportListType.JSON))
                     {
+                        using var jsonWritingMeasurement =
+                            metrics?.Measure(AssetMapBuildStage.JsonWriting);
                         filename = Path.Combine(savePath, $"{name}.json");
                         using StreamWriter file = File.CreateText(filename);
                         var serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.Indented };
@@ -719,6 +766,8 @@ namespace AnimeStudio
                     }
                     if (exportListType.HasFlag(ExportListType.MessagePack))
                     {
+                        using var messagePackWritingMeasurement =
+                            metrics?.Measure(AssetMapBuildStage.MessagePackWriting);
                         filename = Path.Combine(savePath, $"{name}.map");
                         using var file = File.Create(filename);
                         var assetMap = new AssetMap
@@ -735,6 +784,8 @@ namespace AnimeStudio
         }
         public static async Task BuildBoth(string[] files, string mapName, string baseFolder, Game game, string savePath, ExportListType exportListType, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
         {
+            var metrics = new AssetMapBuildMetrics();
+            var assets = new List<AssetEntry>();
             try
             {
                 Logger.Info($"Building Both...");
@@ -743,21 +794,36 @@ namespace AnimeStudio
                 var collision = 0;
                 BaseFolder = baseFolder;
                 assetsManager.Game = game;
-                var assets = new List<AssetEntry>();
-                foreach(var file in LoadFiles(files))
+                foreach(var file in LoadFiles(files, metrics))
                 {
                     BuildCABMap(file, ref collision);
-                    BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters);
+                    BuildAssetMap(
+                        file,
+                        assets,
+                        metrics,
+                        typeFilters,
+                        nameFilters,
+                        containerFilters);
                 }
 
-                UpdateContainers(assets, game);
+                using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                {
+                    UpdateContainers(assets, game);
+                }
                 DumpCABMap(mapName);
 
                 Logger.Info($"Map build successfully !! {collision} collisions found");
-                await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
+                await ExportAssetsMap(
+                    assets,
+                    game,
+                    mapName,
+                    savePath,
+                    exportListType,
+                    metrics);
             }
             finally
             {
+                metrics.LogSummary(assets.Count);
                 StringCache.Clear();
             }
         }

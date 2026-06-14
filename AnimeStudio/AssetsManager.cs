@@ -74,43 +74,59 @@ namespace AnimeStudio
 
         public void LoadFiles(params string[] files)
         {
-            if (Silent)
+            var silenceDuringLoad = Silent;
+            var previousLoggerSilent = Logger.Silent;
+            var previousProgressSilent = Progress.Silent;
+            if (silenceDuringLoad)
             {
                 Logger.Silent = true;
                 Progress.Silent = true;
             }
 
-            var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
-            MergeSplitAssets(path);
-            var toReadFile = ProcessingSplitFiles(files.ToList());
-            if (ResolveDependencies)
-                toReadFile = AssetsHelper.ProcessDependencies(toReadFile);
-            Load(toReadFile);
-
-            if (Silent)
+            try
             {
-                Logger.Silent = false;
-                Progress.Silent = false;
+                var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
+                MergeSplitAssets(path);
+                var toReadFile = ProcessingSplitFiles(files.ToList());
+                if (ResolveDependencies)
+                    toReadFile = AssetsHelper.ProcessDependencies(toReadFile);
+                Load(toReadFile);
+            }
+            finally
+            {
+                if (silenceDuringLoad)
+                {
+                    Logger.Silent = previousLoggerSilent;
+                    Progress.Silent = previousProgressSilent;
+                }
             }
         }
 
         public void LoadFolder(string path)
         {
-            if (Silent)
+            var silenceDuringLoad = Silent;
+            var previousLoggerSilent = Logger.Silent;
+            var previousProgressSilent = Progress.Silent;
+            if (silenceDuringLoad)
             {
                 Logger.Silent = true;
                 Progress.Silent = true;
             }
 
-            MergeSplitAssets(path, true);
-            var files = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories).ToList();
-            var toReadFile = ProcessingSplitFiles(files);
-            Load(toReadFile);
-
-            if (Silent)
+            try
             {
-                Logger.Silent = false;
-                Progress.Silent = false;
+                MergeSplitAssets(path, true);
+                var files = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories).ToList();
+                var toReadFile = ProcessingSplitFiles(files);
+                Load(toReadFile);
+            }
+            finally
+            {
+                if (silenceDuringLoad)
+                {
+                    Logger.Silent = previousLoggerSilent;
+                    Progress.Silent = previousProgressSilent;
+                }
             }
         }
 

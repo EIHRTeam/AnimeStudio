@@ -23,6 +23,7 @@ try
     if (runtimeCompatible)
     {
         VerifyRunSummary(publishDirectory);
+        VerifyAssetMapFailureTiming(publishDirectory);
         VerifyExplicitTypeFilter(publishDirectory);
         VerifyScrapeChunkMerge(publishDirectory);
         VerifyAclResultValidation(publishDirectory);
@@ -279,6 +280,77 @@ static void VerifyRunSummary(string publishDirectory)
     }
     finally
     {
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyAssetMapFailureTiming(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var programType = RequireType(cliAssembly, "AnimeStudio.CLI.Program");
+    var mainMethod = programType.GetMethod(
+        "Main",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(programType.FullName, "Main");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-asset-map-timing-smoke-{Guid.NewGuid():N}");
+    var inputDirectory = Path.Combine(temporaryDirectory, "input");
+    var outputDirectory = Path.Combine(temporaryDirectory, "output");
+    var originalOutput = Console.Out;
+    using var capturedOutput = new StringWriter();
+
+    try
+    {
+        Directory.CreateDirectory(inputDirectory);
+        File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+        Console.SetOut(capturedOutput);
+        var exitCode = (int)mainMethod.Invoke(
+            null,
+            [
+                new[]
+                {
+                    inputDirectory,
+                    outputDirectory,
+                    "--game",
+                    "ArknightsEndfield",
+                    "--map_op",
+                    "AssetMap",
+                    "--map_type",
+                    "XML",
+                    "--map_name",
+                    "timing-smoke",
+                }
+            ])!;
+
+        Assert(exitCode == 0, $"CLI AssetMap timing smoke returned exit code {exitCode}.");
+        var output = capturedOutput.ToString();
+        var timingIndex = output.IndexOf(
+            "AssetMap stage timings (0 assets):",
+            StringComparison.Ordinal);
+        var summaryIndex = output.IndexOf("Run summary:", StringComparison.Ordinal);
+        Assert(
+            output.Contains("AssetMap was not build", StringComparison.Ordinal),
+            "AssetMap parse failure warning was suppressed.");
+        Assert(timingIndex >= 0, "AssetMap parse failure did not print stage timings.");
+        Assert(
+            output.Contains("  Loading: ", StringComparison.Ordinal),
+            "AssetMap loading timing is missing.");
+        Assert(
+            output.Contains("  XML writer: not run", StringComparison.Ordinal),
+            "AssetMap timing did not identify the unrun XML writer.");
+        Assert(
+            summaryIndex > timingIndex,
+            "AssetMap stage timings must be printed before the final run summary.");
+    }
+    finally
+    {
+        Console.SetOut(originalOutput);
         if (Directory.Exists(temporaryDirectory))
         {
             Directory.Delete(temporaryDirectory, true);

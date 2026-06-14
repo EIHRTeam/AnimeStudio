@@ -102,3 +102,25 @@
 - 未完成事项：增加阶段计时并建立 Debian AssetMap 基线；将构建路径接入 spool；实现容器二次解析和 XML/JSON/MessagePack 流式 writer/reader；补齐取消、模拟 OOM 和磁盘失败验收。
 - 后续注意事项：`StringCache` 仍可能在枚举大量唯一字符串时形成全局保留，接入生产路径时必须限定每次 pass 的缓存生命周期；MessagePack 3.1.4 仍有已知 NU1903；在 fixture 原型通过前不得替换当前 LZ4 block-array writer。
 - 起止提交：`c846a7b` -> `3b4603f`（另含本会话文档收尾提交）。
+
+### 会话 2026-06-14-07
+
+- 本次目标：为 Phase 2 AssetMap 基线增加阶段级计时，覆盖加载、对象扫描、容器解析、过滤/写入 spool 预留阶段及各格式 writer，且不改变 map 文件语义。
+- 完成内容：新增单调时钟驱动的 AssetMap 阶段指标，累计加载、对象扫描、容器解析、过滤/spool 预留阶段及 XML、JSON、MessagePack writer 耗时和 pass 数；未选择或因失败未执行的阶段明确显示 `not run`；`BuildAssetMap` 和 `BuildBoth` 均在结束或失败时输出摘要。修复内部静默加载抛异常后未恢复全局日志/进度状态的问题，使 parse failure 的警告和计时可见。
+- 修改文件/接口：新增内部 `AssetMapBuildMetrics` 和 `AssetMapBuildStage`；`AssetsHelper.LoadFiles`、`BuildAssetMap`、`BuildBoth`、`ExportAssetsMap` 接收并记录指标；`AssetsManager.LoadFiles`/`LoadFolder` 用 `finally` 恢复调用前 silent 状态；Core/CLI smoke 增加累计计时、真实 writer、失败状态恢复和最终摘要顺序覆盖。
+- 验证及指标：`dotnet build AnimeStudio.sln -c Release`、Core smoke、`osx-arm64` 动态 package/runtime smoke、`linux-x64`/`win-x64` 跨平台 package smoke、`git diff --check` 和活跃文件旧 TFM/桌面项目引用扫描均通过。legacy fixture 哈希保持 XML `f4679e2c46a3fa7a0979c2193ccd293619eca7ad8db92009876fc9519bad92b2`、JSON `307cbb53304b209c5f90c5a2cf377d8bed28821cb18cdac13029bc2a2cbbf260`、MessagePack `0d63e476db696fb74a23804052ba8ce43d037502f155dbf77bc6dbf834eeeba5`；默认临时根目录无残留，隔离发布目录已删除。
+- 问题与决策：计时仅增加 Info 级诊断，不修改 XML、JSON、MessagePack schema、序列化选项或输出字节；加载 pass 数包含一次 split 预处理和每个输入文件一次加载，便于固定命令横向比较。无效输入 smoke 暴露的 silent 状态泄漏必须修复，否则失败路径会吞掉基线诊断。
+- 未完成事项：提交并推送精确验证版本后，在 Debian 13 运行固定 AssetMap 命令，记录 wall time、峰值 RSS、GC、临时磁盘、最终 map 和 `iostat` 基线；随后把生产构建路径接入 spool，并实现流式 writer/reader。
+- 后续注意事项：当前仍保留全量 `List<AssetEntry>`，本次只建立测量边界；`StringCache` 的 pass 生命周期约束仍需在 spool 接入时落实；MessagePack 3.1.4 的 NU1903 仍为已知警告。
+- 起止提交：`93685d6` -> 当前工作树（未提交）。
+
+### 会话 2026-06-14-08
+
+- 本次目标：持续推进并完整关闭 Phase 2，逐项实现和验证生产 AssetMap 有界构建、三格式流式读写、异常清理以及 Debian 13 基线与回归验收。
+- 完成内容：进行中；已重新核对 `ROADMAP.md`、`PLAN.md`、`STATUS.md`、`PERF_NEXT_STEP.md` 和当前工作树，确认会话 07 的阶段计时改动尚未提交，Phase 2 核心生产路径仍待接入 spool。
+- 修改文件/接口：当前仅建立本会话状态记录；后续修改以 `PLAN.md` 的验收项为边界。
+- 验证及指标：待补充。
+- 问题与决策：完成判定必须逐项具备自动化和 Debian 实机证据；基线与回归均须通过 GitHub 上的精确提交交付，不以未提交工作树或直接传输作为发布溯源。
+- 未完成事项：生产有界构建、XML/JSON/MessagePack 流式 writer/reader、异常清理验收、三 RID 门禁、Debian 基线和回归。
+- 后续注意事项：不得修改或提交用户的未跟踪 `PERF_ANALYZE_REPO.md`；不得在 MessagePack fixture 兼容未证明前替换旧 writer。
+- 起止提交：`93685d6` -> 当前工作树（进行中）。

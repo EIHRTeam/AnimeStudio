@@ -35,6 +35,8 @@ try
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
     VerifyAssetMapEntrySpool();
+    VerifyAssetMapBuildMetrics();
+    VerifySilentStateRestoredAfterLoadFailure();
     VerifyAssetMapCompatibilityFixtures();
     VerifyFailedSliceHandoffCleanup();
     VerifyExceptionalCleanup<OperationCanceledException>();
@@ -419,7 +421,17 @@ static void VerifyAssetMapCompatibilityFixtures()
     var temporaryDirectory = CreateTemporaryRoot();
     try
     {
-        GenerateAssetMapFixtures(temporaryDirectory);
+        var writerMetrics = new AssetMapBuildMetrics();
+        GenerateAssetMapFixtures(temporaryDirectory, writerMetrics);
+        Assert(
+            writerMetrics.GetMeasurementCount(AssetMapBuildStage.XmlWriting) == 1,
+            "Legacy fixture generation did not record the XML writer.");
+        Assert(
+            writerMetrics.GetMeasurementCount(AssetMapBuildStage.JsonWriting) == 1,
+            "Legacy fixture generation did not record the JSON writer.");
+        Assert(
+            writerMetrics.GetMeasurementCount(AssetMapBuildStage.MessagePackWriting) == 1,
+            "Legacy fixture generation did not record the MessagePack writer.");
         Assert(
             File.ReadAllBytes($"{fixtureBase}.json")
                 .SequenceEqual(File.ReadAllBytes(
@@ -447,7 +459,80 @@ static void VerifyAssetMapCompatibilityFixtures()
     }
 }
 
-static void GenerateAssetMapFixtures(string outputDirectory)
+static void VerifyAssetMapBuildMetrics()
+{
+    var metrics = new AssetMapBuildMetrics();
+    using (metrics.Measure(AssetMapBuildStage.Loading))
+    {
+        Thread.SpinWait(10_000);
+    }
+    using (metrics.Measure(AssetMapBuildStage.Loading))
+    {
+        Thread.SpinWait(10_000);
+    }
+    using (metrics.Measure(AssetMapBuildStage.JsonWriting))
+    {
+        Thread.SpinWait(10_000);
+    }
+
+    Assert(
+        metrics.GetMeasurementCount(AssetMapBuildStage.Loading) == 2,
+        "AssetMap loading timing did not accumulate repeated passes.");
+    Assert(
+        metrics.GetElapsed(AssetMapBuildStage.Loading) > TimeSpan.Zero,
+        "AssetMap loading timing did not record elapsed time.");
+
+    var summary = metrics.FormatSummary(123).ToArray();
+    Assert(
+        summary[0] == "AssetMap stage timings (123 assets):",
+        "AssetMap timing summary header changed.");
+    Assert(
+        summary.Any(line => line.StartsWith("  Loading: ", StringComparison.Ordinal)
+            && line.EndsWith("(2 passes)", StringComparison.Ordinal)),
+        "AssetMap loading timing summary is incorrect.");
+    Assert(
+        summary.Contains("  XML writer: not run"),
+        "AssetMap timing summary does not distinguish an unselected writer.");
+    Assert(
+        summary.Any(line => line.StartsWith("  JSON writer: ", StringComparison.Ordinal)
+            && line.EndsWith("(1 pass)", StringComparison.Ordinal)),
+        "AssetMap JSON writer timing summary is incorrect.");
+}
+
+static void VerifySilentStateRestoredAfterLoadFailure()
+{
+    var root = CreateTemporaryRoot();
+    var emptyFile = Path.Combine(root, "empty.bin");
+    File.WriteAllBytes(emptyFile, []);
+    var manager = new AssetsManager { Silent = true };
+
+    try
+    {
+        Logger.Silent = false;
+        Progress.Silent = false;
+        AssertThrows<Exception>(() => manager.LoadFiles(emptyFile));
+        Assert(!Logger.Silent, "LoadFiles failure left global logging silent.");
+        Assert(!Progress.Silent, "LoadFiles failure left global progress silent.");
+
+        Logger.Silent = true;
+        Progress.Silent = true;
+        AssertThrows<Exception>(() =>
+            manager.LoadFolder(Path.Combine(root, "missing-directory")));
+        Assert(Logger.Silent, "LoadFolder failure changed the prior logging state.");
+        Assert(Progress.Silent, "LoadFolder failure changed the prior progress state.");
+    }
+    finally
+    {
+        Logger.Silent = false;
+        Progress.Silent = false;
+        manager.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void GenerateAssetMapFixtures(
+    string outputDirectory,
+    AssetMapBuildMetrics? metrics = null)
 {
     Directory.CreateDirectory(outputDirectory);
     var entries = CreateAssetMapFixtureEntries();
@@ -456,7 +541,8 @@ static void GenerateAssetMapFixtures(string outputDirectory)
             new Game(GameType.ArknightsEndfield, "Arknights: Endfield"),
             "legacy-asset-map",
             outputDirectory,
-            ExportListType.XML | ExportListType.JSON | ExportListType.MessagePack)
+            ExportListType.XML | ExportListType.JSON | ExportListType.MessagePack,
+            metrics)
         .GetAwaiter()
         .GetResult();
     StringCache.Clear();
