@@ -9,4 +9,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\AnimeStudio\AnimeStudio.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

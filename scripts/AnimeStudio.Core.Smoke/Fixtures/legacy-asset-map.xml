@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Assets filename="scripts/AnimeStudio.Core.Smoke/Fixtures/legacy-asset-map.xml" createdAt="2026-06-14T04:47:22">
+  <Asset>
+    <Name>Texture_A</Name>
+    <Container>characters/alpha/texture_a</Container>
+    <Type id="28">Texture2D</Type>
+    <PathID>123456789</PathID>
+    <Source>input/1001.assets</Source>
+  </Asset>
+  <Asset>
+    <Name>Controller_B</Name>
+    <Container />
+    <Type id="91">AnimatorController</Type>
+    <PathID>-987654321</PathID>
+    <Source>input/1002.assets</Source>
+  </Asset>
+</Assets>

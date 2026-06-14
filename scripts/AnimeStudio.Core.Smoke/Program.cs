@@ -2,7 +2,25 @@ using System.Runtime.CompilerServices;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml.Linq;
 using AnimeStudio;
+using MessagePack;
+using Newtonsoft.Json;
+
+if (args.Length == 2 && args[0] == "--update-asset-map-fixtures")
+{
+    try
+    {
+        GenerateAssetMapFixtures(args[1]);
+        Console.WriteLine($"AssetMap fixtures updated in {args[1]}.");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine(exception);
+        return 1;
+    }
+}
 
 try
 {
@@ -16,6 +34,8 @@ try
     VerifySharedSlices();
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
+    VerifyAssetMapEntrySpool();
+    VerifyAssetMapCompatibilityFixtures();
     VerifyFailedSliceHandoffCleanup();
     VerifyExceptionalCleanup<OperationCanceledException>();
     VerifyExceptionalCleanup<OutOfMemoryException>();
@@ -253,6 +273,287 @@ static void VerifyAggregateMemoryBudget()
     finally
     {
         Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapEntrySpool()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        string workspaceDirectory;
+        using (var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+        {
+            TemporaryDirectory = root
+        }))
+        {
+            workspaceDirectory = spool.WorkspaceDirectory;
+            Assert(
+                Path.GetFullPath(workspaceDirectory).StartsWith(
+                    Path.GetFullPath(root),
+                    StringComparison.Ordinal),
+                "AssetMap spool was not created under the configured temporary root.");
+            Assert(File.Exists(spool.TemporaryPath), "AssetMap spool file was not created.");
+            Assert(
+                File.Exists(Path.Combine(workspaceDirectory, ".lock")),
+                "AssetMap spool workspace lock was not created.");
+            AssertThrows<InvalidOperationException>(() => spool.ReadEntries());
+
+            var first = new AssetEntry
+            {
+                Name = "First",
+                Container = "characters/first",
+                Source = "input/001.assets",
+                PathID = 101,
+                Type = ClassIDType.Texture2D,
+                Hash = "001122",
+                Offset = 17
+            };
+            var second = new AssetEntry
+            {
+                Name = null,
+                Container = "",
+                Source = "input/002.assets",
+                PathID = -202,
+                Type = ClassIDType.AnimatorController,
+                Hash = null,
+                Offset = -1
+            };
+            spool.Append(first);
+            spool.Append(second);
+
+            const int syntheticCount = 2048;
+            for (var index = 0; index < syntheticCount; index++)
+            {
+                spool.Append(new AssetEntry
+                {
+                    Name = $"Synthetic-{index % 8}",
+                    Container = $"container/{index % 4}",
+                    Source = $"input/{index % 16}.assets",
+                    PathID = index,
+                    Type = ClassIDType.TextAsset,
+                    Hash = "repeated-hash",
+                    Offset = index * 4L
+                });
+            }
+
+            Assert(
+                spool.Count == syntheticCount + 2,
+                "AssetMap spool record count is incorrect.");
+            spool.Seal();
+            AssertThrows<InvalidOperationException>(() => spool.Append(first));
+
+            var firstPass = ReadSpoolSummary(spool, first, second);
+            var secondPass = ReadSpoolSummary(spool, first, second);
+            Assert(firstPass == secondPass, "Repeated AssetMap spool enumeration changed results.");
+            Assert(
+                firstPass.Count == syntheticCount + 2,
+                "AssetMap spool enumeration returned the wrong record count.");
+
+            using (var append = new FileStream(
+                spool.TemporaryPath,
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.Read))
+            {
+                append.WriteByte(0x7f);
+            }
+            AssertThrows<InvalidDataException>(() => Consume(spool.ReadEntries()));
+        }
+
+        Assert(
+            !Directory.EnumerateDirectories(root, "run-*").Any(),
+            "Disposed AssetMap spool left a temporary run directory.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapCompatibilityFixtures()
+{
+    var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+    var fixtureBase = Path.Combine(fixtureDirectory, "legacy-asset-map");
+    var manifestPath = Path.Combine(fixtureDirectory, "legacy-asset-map.sha256");
+    Assert(File.Exists(manifestPath), "AssetMap fixture hash manifest is missing.");
+
+    foreach (var line in File.ReadLines(manifestPath))
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            continue;
+        }
+
+        var separator = line.IndexOf("  ", StringComparison.Ordinal);
+        Assert(separator > 0, $"Invalid AssetMap fixture hash line: {line}");
+        var expectedHash = line[..separator];
+        var fileName = line[(separator + 2)..];
+        var path = Path.Combine(fixtureDirectory, fileName);
+        Assert(File.Exists(path), $"AssetMap fixture is missing: {fileName}");
+        var actualHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))
+            .ToLowerInvariant();
+        Assert(
+            actualHash == expectedHash,
+            $"AssetMap fixture hash changed for {fileName}: {actualHash}.");
+    }
+
+    var expectedEntries = CreateAssetMapFixtureEntries();
+    using (var stream = File.OpenRead($"{fixtureBase}.map"))
+    {
+        var map = MessagePackSerializer.Deserialize<AssetMap>(
+            stream,
+            MessagePackSerializerOptions.Standard.WithCompression(
+                MessagePackCompression.Lz4BlockArray));
+        Assert(map.GameType == GameType.ArknightsEndfield, "MessagePack fixture game changed.");
+        AssertAssetEntryListsEqual(expectedEntries, map.AssetEntries, "MessagePack fixture");
+    }
+
+    var json = JsonConvert.DeserializeObject<AssetMap>(
+        File.ReadAllText($"{fixtureBase}.json"))
+        ?? throw new InvalidDataException("JSON fixture did not deserialize.");
+    Assert(json.GameType == GameType.ArknightsEndfield, "JSON fixture game changed.");
+    AssertAssetEntryListsEqual(expectedEntries, json.AssetEntries, "JSON fixture");
+
+    var temporaryDirectory = CreateTemporaryRoot();
+    try
+    {
+        GenerateAssetMapFixtures(temporaryDirectory);
+        Assert(
+            File.ReadAllBytes($"{fixtureBase}.json")
+                .SequenceEqual(File.ReadAllBytes(
+                    Path.Combine(temporaryDirectory, "legacy-asset-map.json"))),
+            "Current JSON AssetMap writer differs from the legacy fixture.");
+        Assert(
+            File.ReadAllBytes($"{fixtureBase}.map")
+                .SequenceEqual(File.ReadAllBytes(
+                    Path.Combine(temporaryDirectory, "legacy-asset-map.map"))),
+            "Current MessagePack AssetMap writer differs from the legacy fixture.");
+
+        var expectedXml = XDocument.Load($"{fixtureBase}.xml");
+        var actualXml = XDocument.Load(
+            Path.Combine(temporaryDirectory, "legacy-asset-map.xml"));
+        NormalizeAssetMapXml(expectedXml);
+        NormalizeAssetMapXml(actualXml);
+        Assert(
+            XNode.DeepEquals(expectedXml, actualXml),
+            "Current XML AssetMap writer differs from the normalized legacy fixture.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(temporaryDirectory, true);
+    }
+}
+
+static void GenerateAssetMapFixtures(string outputDirectory)
+{
+    Directory.CreateDirectory(outputDirectory);
+    var entries = CreateAssetMapFixtureEntries();
+    AssetsHelper.ExportAssetsMap(
+            entries,
+            new Game(GameType.ArknightsEndfield, "Arknights: Endfield"),
+            "legacy-asset-map",
+            outputDirectory,
+            ExportListType.XML | ExportListType.JSON | ExportListType.MessagePack)
+        .GetAwaiter()
+        .GetResult();
+    StringCache.Clear();
+}
+
+static List<AssetEntry> CreateAssetMapFixtureEntries()
+{
+    return
+    [
+        new AssetEntry
+        {
+            Name = "Texture_A",
+            Container = "characters/alpha/texture_a",
+            Source = "input/1001.assets",
+            PathID = 123456789,
+            Type = ClassIDType.Texture2D,
+            Hash = "00112233445566778899aabbccddeeff",
+            Offset = 4096
+        },
+        new AssetEntry
+        {
+            Name = "Controller_B",
+            Container = "",
+            Source = "input/1002.assets",
+            PathID = -987654321,
+            Type = ClassIDType.AnimatorController,
+            Hash = null,
+            Offset = -1
+        }
+    ];
+}
+
+static void AssertAssetEntryListsEqual(
+    IReadOnlyList<AssetEntry> expected,
+    IReadOnlyList<AssetEntry>? actual,
+    string label)
+{
+    if (actual == null)
+    {
+        throw new InvalidDataException($"{label} entries are missing.");
+    }
+
+    Assert(expected.Count == actual.Count, $"{label} entry count changed.");
+    for (var index = 0; index < expected.Count; index++)
+    {
+        AssertAssetEntriesEqual(expected[index], actual[index], $"{label} entry {index}");
+    }
+}
+
+static void NormalizeAssetMapXml(XDocument document)
+{
+    var root = document.Root
+        ?? throw new InvalidDataException("AssetMap XML fixture has no root element.");
+    root.SetAttributeValue("filename", "<normalized>");
+    root.SetAttributeValue("createdAt", "<normalized>");
+}
+
+static (long Count, long PathIdSum) ReadSpoolSummary(
+    AssetMapEntrySpool spool,
+    AssetEntry expectedFirst,
+    AssetEntry expectedSecond)
+{
+    long count = 0;
+    long pathIdSum = 0;
+    foreach (var entry in spool.ReadEntries())
+    {
+        if (count == 0)
+        {
+            AssertAssetEntriesEqual(expectedFirst, entry, "first");
+        }
+        else if (count == 1)
+        {
+            AssertAssetEntriesEqual(expectedSecond, entry, "second");
+        }
+
+        count++;
+        pathIdSum = checked(pathIdSum + entry.PathID);
+    }
+
+    return (count, pathIdSum);
+}
+
+static void AssertAssetEntriesEqual(AssetEntry expected, AssetEntry actual, string label)
+{
+    Assert(expected.Name == actual.Name, $"AssetMap spool {label} name changed.");
+    Assert(expected.Container == actual.Container, $"AssetMap spool {label} container changed.");
+    Assert(expected.Source == actual.Source, $"AssetMap spool {label} source changed.");
+    Assert(expected.PathID == actual.PathID, $"AssetMap spool {label} PathID changed.");
+    Assert(expected.Type == actual.Type, $"AssetMap spool {label} type changed.");
+    Assert(expected.Hash == actual.Hash, $"AssetMap spool {label} hash changed.");
+    Assert(expected.Offset == actual.Offset, $"AssetMap spool {label} offset changed.");
+}
+
+static void Consume(IEnumerable<AssetEntry> entries)
+{
+    foreach (var _ in entries)
+    {
     }
 }
 

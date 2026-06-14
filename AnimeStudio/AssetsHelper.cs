@@ -665,7 +665,7 @@ namespace AnimeStudio
             }
         }
 
-        private static Task ExportAssetsMap(List<AssetEntry> toExportAssets, Game game, string name, string savePath, ExportListType exportListType)
+        internal static Task ExportAssetsMap(List<AssetEntry> toExportAssets, Game game, string name, string savePath, ExportListType exportListType)
         {
             return Task.Run(() =>
             {

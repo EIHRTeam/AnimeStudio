@@ -1,19 +1,13 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Threading;
 
 namespace AnimeStudio
 {
     internal sealed class ContainerStorageManager : IDisposable
     {
-        private const long RequiredFreeSpaceReserve = 1024L * 1024 * 1024;
-        private static readonly TimeSpan StaleDirectoryAge = TimeSpan.FromDays(7);
-
         private readonly object sync = new();
         private readonly ContainerStorageOptions options;
-        private string runDirectory;
-        private FileStream lockStream;
+        private TemporaryFileWorkspace workspace;
         private int activeStores;
         private long activeMemoryBytes;
         private bool disposeRequested;
@@ -52,16 +46,7 @@ namespace AnimeStudio
                 }
             }
 
-            var directory = EnsureRunDirectory(expectedLength);
-            var sourceName = Path.GetFileName(sourcePath);
-            if (string.IsNullOrWhiteSpace(sourceName))
-            {
-                sourceName = "container";
-            }
-
-            var temporaryPath = Path.Combine(
-                directory,
-                $"{SanitizeFileName(sourceName)}-{Guid.NewGuid():N}.bin");
+            var temporaryPath = CreateTemporaryPath(expectedLength, sourcePath);
 
             FileStream fileStream = null;
             try
@@ -172,7 +157,7 @@ namespace AnimeStudio
             }
         }
 
-        private string EnsureRunDirectory(long expectedLength)
+        private string CreateTemporaryPath(long expectedLength, string sourcePath)
         {
             lock (sync)
             {
@@ -181,111 +166,8 @@ namespace AnimeStudio
                     throw new ObjectDisposedException(nameof(ContainerStorageManager));
                 }
 
-                if (runDirectory == null)
-                {
-                    var rootDirectory = string.IsNullOrWhiteSpace(options.TemporaryDirectory)
-                        ? ContainerStorageOptions.GetDefaultTemporaryDirectory()
-                        : Path.GetFullPath(options.TemporaryDirectory);
-
-                    Directory.CreateDirectory(rootDirectory);
-                    CleanupStaleDirectories(rootDirectory);
-
-                    runDirectory = Path.Combine(
-                        rootDirectory,
-                        $"run-{Environment.ProcessId}-{Guid.NewGuid():N}");
-                    Directory.CreateDirectory(runDirectory);
-
-                    var lockPath = Path.Combine(runDirectory, ".lock");
-                    lockStream = new FileStream(
-                        lockPath,
-                        FileMode.CreateNew,
-                        FileAccess.ReadWrite,
-                        FileShare.Read);
-                    using var writer = new StreamWriter(lockStream, leaveOpen: true);
-                    writer.WriteLine(Environment.ProcessId);
-                    writer.WriteLine(DateTimeOffset.UtcNow.ToString("O"));
-                    writer.Flush();
-                    lockStream.Flush(true);
-                }
-
-                EnsureFreeSpace(runDirectory, expectedLength);
-                return runDirectory;
-            }
-        }
-
-        private static void EnsureFreeSpace(string directory, long expectedLength)
-        {
-            var fullPath = Path.GetFullPath(directory);
-            DriveInfo drive = null;
-            foreach (var candidate in DriveInfo.GetDrives())
-            {
-                try
-                {
-                    if (!candidate.IsReady)
-                    {
-                        continue;
-                    }
-
-                    var relativePath = Path.GetRelativePath(candidate.RootDirectory.FullName, fullPath);
-                    if (relativePath != ".."
-                        && !relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                        && (drive == null
-                            || candidate.RootDirectory.FullName.Length > drive.RootDirectory.FullName.Length))
-                    {
-                        drive = candidate;
-                    }
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
-
-            if (drive == null)
-            {
-                throw new IOException($"Cannot determine the storage volume for '{directory}'.");
-            }
-
-            var required = checked(expectedLength + RequiredFreeSpaceReserve);
-            if (drive.AvailableFreeSpace < required)
-            {
-                throw new IOException(
-                    $"Insufficient container temporary storage in '{directory}': " +
-                    $"requires {required} bytes including reserve, available {drive.AvailableFreeSpace} bytes.");
-            }
-        }
-
-        private static void CleanupStaleDirectories(string rootDirectory)
-        {
-            foreach (var directory in Directory.EnumerateDirectories(rootDirectory, "run-*"))
-            {
-                try
-                {
-                    var info = new DirectoryInfo(directory);
-                    if (DateTime.UtcNow - info.LastWriteTimeUtc < StaleDirectoryAge)
-                    {
-                        continue;
-                    }
-
-                    var lockPath = Path.Combine(directory, ".lock");
-                    using (new FileStream(
-                        lockPath,
-                        FileMode.OpenOrCreate,
-                        FileAccess.ReadWrite,
-                        FileShare.None))
-                    {
-                    }
-
-                    Directory.Delete(directory, true);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
+                workspace ??= new TemporaryFileWorkspace(options);
+                return workspace.CreateFilePath(sourcePath, ".bin", expectedLength);
             }
         }
 
@@ -297,44 +179,8 @@ namespace AnimeStudio
             }
 
             cleanupComplete = true;
-            lockStream?.Dispose();
-            lockStream = null;
-
-            if (runDirectory != null)
-            {
-                try
-                {
-                    Directory.Delete(runDirectory, true);
-                }
-                catch (DirectoryNotFoundException)
-                {
-                }
-                catch (IOException exception)
-                {
-                    Logger.Warning(
-                        $"Failed to remove container temporary directory '{runDirectory}': {exception.Message}");
-                }
-                catch (UnauthorizedAccessException exception)
-                {
-                    Logger.Warning(
-                        $"Failed to remove container temporary directory '{runDirectory}': {exception.Message}");
-                }
-            }
-        }
-
-        private static string SanitizeFileName(string value)
-        {
-            var invalidCharacters = new HashSet<char>(Path.GetInvalidFileNameChars());
-            var characters = value.ToCharArray();
-            for (var index = 0; index < characters.Length; index++)
-            {
-                if (invalidCharacters.Contains(characters[index]))
-                {
-                    characters[index] = '_';
-                }
-            }
-
-            return new string(characters);
+            workspace?.Dispose();
+            workspace = null;
         }
 
         private static void TryDeleteFile(string path)

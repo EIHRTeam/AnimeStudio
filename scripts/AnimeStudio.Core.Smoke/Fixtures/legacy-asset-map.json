@@ -1,0 +1,23 @@
+{
+  "GameType": "ArknightsEndfield",
+  "AssetEntries": [
+    {
+      "Name": "Texture_A",
+      "Container": "characters/alpha/texture_a",
+      "Source": "input/1001.assets",
+      "PathID": 123456789,
+      "Type": "Texture2D",
+      "Hash": "00112233445566778899aabbccddeeff",
+      "Offset": 4096
+    },
+    {
+      "Name": "Controller_B",
+      "Container": "",
+      "Source": "input/1002.assets",
+      "PathID": -987654321,
+      "Type": "AnimatorController",
+      "Hash": null,
+      "Offset": -1
+    }
+  ]
+}

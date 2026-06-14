@@ -89,5 +89,16 @@
 
 - Status: active
 - Branch: `feat/asset-map-streaming`
-- Baseline commit: `a0a7176`
+- Baseline commit: `c846a7b`
 - Acceptance: 见 `PLAN.md`；尚未开始。
+
+### 会话 2026-06-14-06
+
+- 本次目标：开始 Phase 2，固定旧 AssetMap 格式兼容 fixture，并实现可重复有界枚举的磁盘后备条目 spool 基础。
+- 完成内容：抽取通用 `TemporaryFileWorkspace`，使容器后备和 AssetMap spool 共用临时根目录解析、进程锁、过期目录清理、1 GiB 磁盘余量和显式失败行为；新增版本 1 的 `AssetMapEntrySpool`，支持长度分隔记录、64 位计数、封口、重复有界枚举和自动清理；由旧 writer 直接生成 XML/JSON/MessagePack fixture 并锁定 SHA256。
+- 修改文件/接口：新增内部 `TemporaryFileWorkspace` 和 `AssetMapEntrySpool`；`ContainerStorageManager` 委托通用工作区但保留容器文件 1 字节缓冲、累计内存预算和引用计数；`AssetsHelper.ExportAssetsMap` 放宽为程序集内部测试入口；Core smoke 新增 fixture 更新/验证、spool 重复枚举、空字段、尾随损坏和清理覆盖。
+- 验证及指标：`dotnet build AnimeStudio.sln -c Release`、Core smoke、`win-x64`/`linux-x64`/`osx-arm64` 发布与 package smoke、`git diff --check` 和活跃文件旧 TFM/桌面项目引用扫描均通过；默认 AnimeStudio 临时根目录无残留。fixture SHA256：XML `f4679e2c46a3fa7a0979c2193ccd293619eca7ad8db92009876fc9519bad92b2`，JSON `307cbb53304b209c5f90c5a2cf377d8bed28821cb18cdac13029bc2a2cbbf260`，MessagePack `0d63e476db696fb74a23804052ba8ce43d037502f155dbf77bc6dbf834eeeba5`。
+- 问题与决策：第一批改动不替换生产 writer，也不接入 `BuildAssetMap`；JSON 和 MessagePack 新生成结果必须与 fixture 逐字节一致，XML 因旧格式包含输出路径和 UTC 创建时间，仅在明确规范化这两个属性后比较结构。spool 对单字符串设 16 MiB、单记录设 64 MiB 硬上限，并按 64 MiB 写入窗口复查磁盘余量。
+- 未完成事项：增加阶段计时并建立 Debian AssetMap 基线；将构建路径接入 spool；实现容器二次解析和 XML/JSON/MessagePack 流式 writer/reader；补齐取消、模拟 OOM 和磁盘失败验收。
+- 后续注意事项：`StringCache` 仍可能在枚举大量唯一字符串时形成全局保留，接入生产路径时必须限定每次 pass 的缓存生命周期；MessagePack 3.1.4 仍有已知 NU1903；在 fixture 原型通过前不得替换当前 LZ4 block-array writer。
+- 起止提交：`c846a7b` -> 进行中。
