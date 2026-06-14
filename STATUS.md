@@ -70,4 +70,4 @@
 - 问题与决策：Phase 1 仍须先关闭输出兼容策略；后续最近的性能工作包仍是 Phase 2 AssetMap 流式化。明确拒绝当前直接把所有 file-backed `FileStream` 缓冲从 1 字节放大到 64 KiB，也不在缺少运行时证据时切换 Server GC、引入 MMF 或并行解析。
 - 未完成事项：无；Phase 1 关闭后应以本文为输入整体替换 `PLAN.md`，再开始 Phase 2 实现。
 - 后续注意事项：本文不替代三份权威开发文档；`PERF_ANALYZE_REPO.md` 的倍率均为静态估算，后续只能引用实测收益；MessagePack 流式化必须先固定旧格式 fixture 和兼容政策。
-- 起止提交：`55eba6e` -> 待本会话文档提交。
+- 起止提交：`55eba6e` -> `9fce159`（另含本会话文档收尾提交）。
