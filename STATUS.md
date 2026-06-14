@@ -49,3 +49,14 @@
 - 未完成事项：Phase 1 仍需明确 strict byte identity 与 normalized compatibility 验收政策；Phase 4 需降低全量 Convert 导出峰值。
 - 后续注意事项：Linux 正式版必须使用 RID 发布包或根目录 `build-linux-release.sh`，不得部署无 RID 的 `bin/Publish/net10.0`；保持单对象失败继续批处理；不得吞掉所有 native 异常；远程代码交付默认走 GitHub，直传例外必须记录原因。完整回归仍有 2,690 条既有资产级 MonoBehaviour/Shader/Mesh/缺失资源错误，不属于本次 FBX 崩溃修复。
 - 起止提交：`4f0ca6b` -> `b1db294`（另含本会话文档收尾提交）。
+
+### 会话 2026-06-14-03
+
+- 本次目标：在 CLI 成功完成后输出英文运行总结，包括总耗时、输出目录、最终输出文件数与大小，以及解包前输入总大小。
+- 完成内容：新增英文 `Run summary`，成功路径最后输出总耗时、绝对输出目录、输入文件数与解包前总大小、最终输出文件数与总大小；时间采用总小时且不按 24 小时回绕的 `hh:mm:ss (12345s)` 格式，大小同时显示 IEC 可读值和精确字节数。
+- 修改文件/接口：新增内部 `FileTreeStatistics` 和 `RunSummary`；`Program.Run` 在原始输入扫描后记录输入统计，并在所有导出和 scraped strings 收尾后流式统计输出目录；CLI package smoke 新增时间、大小、嵌套目录统计和真实命令尾部输出断言。
+- 验证及指标：`dotnet build AnimeStudio.sln -c Release`、Core smoke、macOS ARM64 动态 package/runtime smoke、Linux x64 与 Windows x64 跨平台 package smoke、`git diff --check` 和活跃文件旧 TFM/GUI 引用扫描均通过。最小实际命令确认最后输出输入 1 文件/3 bytes、输出 0 文件/0 bytes，退出码 0。
+- 问题与决策：输出统计按命令结束时输出目录的最终文件树计算，包含预先存在的文件；输入大小按开始处理前扫描到的原始输入文件总大小计算；目录统计使用 `Directory.EnumerateFiles`，不保存完整路径列表。统计不可用时总结显示 `unavailable`，不得把已成功的资产导出改判为失败。
+- 未完成事项：无。
+- 后续注意事项：超大输出目录的最终统计需要额外完整遍历，其耗时计入总耗时；总结必须保持为成功命令的最后一组输出。
+- 起止提交：`2100e8b` -> `05a0426`（另含本会话文档收尾提交）。
