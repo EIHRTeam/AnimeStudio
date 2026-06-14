@@ -39,6 +39,7 @@ try
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
     VerifyAssetMapEntrySpool();
+    VerifyAssetMapStringCache();
     VerifyAssetMapBuildMetrics();
     VerifySilentStateRestoredAfterLoadFailure();
     VerifyAssetMapCompatibilityFixtures();
@@ -374,6 +375,50 @@ static void VerifyAssetMapEntrySpool()
         Assert(
             !Directory.EnumerateDirectories(root, "run-*").Any(),
             "Disposed AssetMap spool left a temporary run directory.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapStringCache()
+{
+    const string first = "main/861b3a751571cd61a25f16ae.ab";
+    const string collision = "Terrain_4_0_14_A";
+    var root = CreateTemporaryRoot();
+    try
+    {
+        using (var cache = new AssetMapStringCache(
+            new ContainerStorageOptions
+            {
+                TemporaryDirectory = root
+            },
+            cacheByteLimit: 0,
+            cacheEntryLimit: 0))
+        {
+            Assert(
+                SevenZip.CRC.CalculateDigestUTF8(first)
+                    == SevenZip.CRC.CalculateDigestUTF8(collision),
+                "AssetMap string-cache collision fixture is invalid.");
+            Assert(cache.Get(null) == null, "AssetMap string cache changed null.");
+            Assert(cache.Get(first) == first, "AssetMap string cache changed its first value.");
+            Assert(
+                cache.Get(collision) == first,
+                "Disk-backed AssetMap string cache did not preserve first-CRC semantics.");
+            Assert(
+                cache.Get(collision) == first,
+                "Disk-backed AssetMap string cache changed after repeated disk lookup.");
+            Assert(cache.Count == 1, "AssetMap string cache stored a CRC collision twice.");
+            Assert(
+                StringCache.Count == 0,
+                "Disk-backed AssetMap string cache populated the process StringCache.");
+        }
+
+        Assert(
+            !Directory.EnumerateDirectories(root, "run-*").Any(),
+            "Disposed AssetMap string cache left a temporary workspace.");
     }
     finally
     {

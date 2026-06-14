@@ -351,24 +351,34 @@ namespace AnimeStudio
                 assetsManager.Game = game;
                 using var unresolvedSpool =
                     new AssetMapEntrySpool(assetsManager.ContainerStorageOptions);
-                foreach (var file in LoadFiles(files, metrics))
-                {
-                    BuildAssetMapFile(
-                        file,
-                        unresolvedSpool,
-                        metrics,
-                        typeFilters,
-                        nameFilters,
-                        containerFilters);
-                }
-                unresolvedSpool.Seal();
-
                 using var resolvedSpool =
                     new AssetMapEntrySpool(assetsManager.ContainerStorageOptions);
-                using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                using (var stringCache =
+                    new AssetMapStringCache(assetsManager.ContainerStorageOptions))
                 {
-                    ResolveContainers(unresolvedSpool, resolvedSpool, game);
+                    foreach (var file in LoadFiles(files, metrics))
+                    {
+                        BuildAssetMapFile(
+                            file,
+                            unresolvedSpool,
+                            stringCache,
+                            metrics,
+                            typeFilters,
+                            nameFilters,
+                            containerFilters);
+                    }
+                    unresolvedSpool.Seal();
+
+                    using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                    {
+                        ResolveContainers(
+                            unresolvedSpool,
+                            resolvedSpool,
+                            stringCache,
+                            game);
+                    }
                 }
+
                 resolvedSpool.Seal();
                 assetCount = resolvedSpool.Count;
 
@@ -398,6 +408,7 @@ namespace AnimeStudio
         private static void BuildAssetMapFile(
             string file,
             AssetMapEntrySpool spool,
+            AssetMapStringCache stringCache,
             AssetMapBuildMetrics metrics,
             ClassIDType[] typeFilters = null,
             Regex[] nameFilters = null,
@@ -419,11 +430,11 @@ namespace AnimeStudio
                     var obj = new Object(objectReader);
                     var asset = new AssetMapEntryRecord
                     {
-                        Source = file,
+                        Source = stringCache.Get(file),
                         PathID = objectReader.m_PathID,
                         Type = objectReader.type,
-                        Container = "",
-                        Hash = obj.GetHash(),
+                        Container = stringCache.Get(""),
+                        Hash = stringCache.Get(obj.GetHash()),
                         Offset = assetsFile.offset
                     };
 
@@ -453,21 +464,22 @@ namespace AnimeStudio
                                 }
 
                                 obj = null;
-                                asset.Name = assetBundle.m_Name;
+                                asset.Name = stringCache.Get(assetBundle.m_Name);
                                 exportable = ClassIDType.AssetBundle.CanExport();
                                 break;
                             case ClassIDType.GameObject when ClassIDType.GameObject.CanParse():
                                 var gameObject = new GameObject(objectReader);
                                 obj = gameObject;
-                                asset.Name = gameObject.m_Name;
+                                asset.Name = stringCache.Get(gameObject.m_Name);
                                 exportable = ClassIDType.GameObject.CanExport();
                                 break;
                             case ClassIDType.Shader when ClassIDType.Shader.CanParse():
-                                asset.Name = objectReader.ReadAlignedString();
+                                asset.Name = stringCache.Get(
+                                    objectReader.ReadAlignedString());
                                 if (string.IsNullOrEmpty(asset.Name))
                                 {
                                     var m_parsedForm = new SerializedShader(objectReader);
-                                    asset.Name = m_parsedForm.m_Name;
+                                    asset.Name = stringCache.Get(m_parsedForm.m_Name);
                                 }
 
                                 exportable = ClassIDType.Shader.CanExport();
@@ -475,19 +487,19 @@ namespace AnimeStudio
                             case ClassIDType.Animator when ClassIDType.Animator.CanParse():
                                 var component = new PPtr<Object>(objectReader);
                                 animators.Add((component, asset));
-                                asset.Name = objectReader.type.ToString();
+                                asset.Name = stringCache.Get(objectReader.type.ToString());
                                 exportable = ClassIDType.Animator.CanExport();
                                 break;
                             case ClassIDType.MiHoYoBinData when ClassIDType.MiHoYoBinData.CanParse():
                                 var MiHoYoBinData = new MiHoYoBinData(objectReader);
                                 obj = MiHoYoBinData;
-                                asset.Name = objectReader.type.ToString();
+                                asset.Name = stringCache.Get(objectReader.type.ToString());
                                 exportable = ClassIDType.MiHoYoBinData.CanExport();
                                 break;
                             case ClassIDType.NapAssetBundleIndexAsset when ClassIDType.NapAssetBundleIndexAsset.CanParse():
                                 var NapAssetBundleIndexAsset = new NapAssetBundleIndexAsset(objectReader);
                                 obj = NapAssetBundleIndexAsset;
-                                asset.Name = obj.Name;
+                                asset.Name = stringCache.Get(obj.Name);
                                 exportable = ClassIDType.NapAssetBundleIndexAsset.CanExport();
                                 break;
                             case ClassIDType.IndexObject when ClassIDType.IndexObject.CanParse():
@@ -497,7 +509,7 @@ namespace AnimeStudio
                                 {
                                     mihoyoBinDataNames.Add((index.Value.Object, index.Key));
                                 }
-                                asset.Name = "IndexObject";
+                                asset.Name = stringCache.Get("IndexObject");
                                 exportable = ClassIDType.IndexObject.CanExport();
                                 break;
                             case ClassIDType.Font when ClassIDType.Font.CanExport():
@@ -510,16 +522,20 @@ namespace AnimeStudio
                             case ClassIDType.VideoClip when ClassIDType.VideoClip.CanExport():
                             case ClassIDType.AudioClip when ClassIDType.AudioClip.CanExport():
                             case ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanExport():
-                                asset.Name = objectReader.ReadAlignedString();
+                                asset.Name = stringCache.Get(
+                                    objectReader.ReadAlignedString());
                                 exportable = true;
                                 break;
                             case ClassIDType.MonoBehaviour when ClassIDType.MonoBehaviour.CanParse():
                                 var monoBehaviour = new MonoBehaviour(objectReader);
-                                asset.Name = String.IsNullOrWhiteSpace(monoBehaviour.Name) ? objectReader.type.ToString() : monoBehaviour.Name;
+                                asset.Name = stringCache.Get(
+                                    String.IsNullOrWhiteSpace(monoBehaviour.Name)
+                                        ? objectReader.type.ToString()
+                                        : monoBehaviour.Name);
                                 exportable = true;
                                 break;
                             default:
-                                asset.Name = objectReader.type.ToString();
+                                asset.Name = stringCache.Get(objectReader.type.ToString());
                                 exportable = !Minimal;
                                 break;
                         }
@@ -552,7 +568,7 @@ namespace AnimeStudio
             {
                 if (pptr.TryGet<GameObject>(out var gameObject))
                 {
-                    asset.Name = gameObject.m_Name;
+                    asset.Name = stringCache.Get(gameObject.m_Name);
                 }
             }
             foreach ((var pptr, var name) in mihoyoBinDataNames)
@@ -562,17 +578,17 @@ namespace AnimeStudio
                     var asset = objectAssetItemDic[miHoYoBinData];
                     if (int.TryParse(name, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hash))
                     {
-                        asset.Name = name;
-                        asset.Container = hash.ToString();
+                        asset.Name = stringCache.Get(name);
+                        asset.Container = stringCache.Get(hash.ToString());
                     }
-                    else asset.Name = $"BinFile #{asset.PathID}";
+                    else asset.Name = stringCache.Get($"BinFile #{asset.PathID}");
                 }
             }
             foreach ((var pptr, var container) in containers)
             {
                 if (pptr.TryGet(out var obj))
                 {
-                    objectAssetItemDic[obj].Container = container;
+                    objectAssetItemDic[obj].Container = stringCache.Get(container);
                 }
             }
             objectScanningMeasurement.Dispose();
@@ -618,6 +634,7 @@ namespace AnimeStudio
         private static void ResolveContainers(
             AssetMapEntrySpool source,
             AssetMapEntrySpool destination,
+            AssetMapStringCache stringCache,
             Game game)
         {
             var updateContainers = game.Type.IsGISubGroup() && source.Count > 0;
@@ -638,10 +655,11 @@ namespace AnimeStudio
                         var path = ResourceIndex.GetContainer(id, last);
                         if (!string.IsNullOrEmpty(path))
                         {
-                            asset.Container = path;
+                            asset.Container = stringCache.Get(path);
                             if (asset.Type == ClassIDType.MiHoYoBinData)
                             {
-                                asset.Name = Path.GetFileNameWithoutExtension(path);
+                                asset.Name = stringCache.Get(
+                                    Path.GetFileNameWithoutExtension(path));
                             }
                         }
                     }
@@ -722,25 +740,35 @@ namespace AnimeStudio
                 assetsManager.Game = game;
                 using var unresolvedSpool =
                     new AssetMapEntrySpool(assetsManager.ContainerStorageOptions);
-                foreach(var file in LoadFiles(files, metrics))
-                {
-                    BuildCABMap(file, ref collision);
-                    BuildAssetMapFile(
-                        file,
-                        unresolvedSpool,
-                        metrics,
-                        typeFilters,
-                        nameFilters,
-                        containerFilters);
-                }
-                unresolvedSpool.Seal();
-
                 using var resolvedSpool =
                     new AssetMapEntrySpool(assetsManager.ContainerStorageOptions);
-                using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                using (var stringCache =
+                    new AssetMapStringCache(assetsManager.ContainerStorageOptions))
                 {
-                    ResolveContainers(unresolvedSpool, resolvedSpool, game);
+                    foreach(var file in LoadFiles(files, metrics))
+                    {
+                        BuildCABMap(file, ref collision);
+                        BuildAssetMapFile(
+                            file,
+                            unresolvedSpool,
+                            stringCache,
+                            metrics,
+                            typeFilters,
+                            nameFilters,
+                            containerFilters);
+                    }
+                    unresolvedSpool.Seal();
+
+                    using (metrics.Measure(AssetMapBuildStage.ContainerResolution))
+                    {
+                        ResolveContainers(
+                            unresolvedSpool,
+                            resolvedSpool,
+                            stringCache,
+                            game);
+                    }
                 }
+
                 resolvedSpool.Seal();
                 assetCount = resolvedSpool.Count;
                 DumpCABMap(mapName);
