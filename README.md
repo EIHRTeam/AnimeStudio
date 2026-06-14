@@ -5,9 +5,9 @@
 
 This is a fork of the original Anime Studio, focused on improving Linux CI/CD support and compatibility with macOS environments.
 
-The primary goal of this fork is to optimize the CLI for processing Arknights: Endfield VFS files in low-memory Linux and macOS environments. Maintenance of the GUI version and support for other games are not planned and will not be under consideration.
+The primary goal of this fork is to optimize the CLI for batch processing Arknights: Endfield VFS files in low-memory (specifically 16 GB or less) Linux and macOS environments. Maintenance of the GUI version and support for other games are not planned and will not be under consideration.
 
-Please note that much of the work in this fork was AI-assisted. The project is intended to “just work” for its specific use case, rather than to be a polished or broadly optimized solution.
+Please note that much of the work in this fork was AI-assisted. The project is intended to “just work” for its specific use case, rather than to be a polished, elegant, or state-of-the-art solution.
 
 Original README follows.
 
