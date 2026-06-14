@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -15,6 +16,7 @@ namespace AnimeStudio.CLI
 
         public static int Run(Options o)
         {
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 var game = GameManager.GetGame(o.GameName);
@@ -159,6 +161,10 @@ namespace AnimeStudio.CLI
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
                 Logger.Info($"Found {files.Length} files");
+                var hasInputStatistics = RunSummary.TryMeasureFiles(
+                    files,
+                    out var inputStatistics,
+                    out var inputStatisticsError);
 
                 if (o.MapOp.HasFlag(MapOpType.CABMap))
                 {
@@ -237,6 +243,19 @@ namespace AnimeStudio.CLI
                     CompleteScrapedStrings(mapsPath);
                 }
 
+                var hasOutputStatistics = RunSummary.TryMeasureDirectory(
+                    o.Output.FullName,
+                    out var outputStatistics,
+                    out var outputStatisticsError);
+                stopwatch.Stop();
+                RunSummary.Write(
+                    Console.Out,
+                    stopwatch.Elapsed,
+                    o.Output.FullName,
+                    hasInputStatistics ? inputStatistics : null,
+                    inputStatisticsError,
+                    hasOutputStatistics ? outputStatistics : null,
+                    outputStatisticsError);
                 return 0;
             }
             catch (OutOfMemoryException)

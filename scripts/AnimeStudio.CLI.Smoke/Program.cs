@@ -22,6 +22,7 @@ try
 
     if (runtimeCompatible)
     {
+        VerifyRunSummary(publishDirectory);
         VerifyExplicitTypeFilter(publishDirectory);
         VerifyScrapeChunkMerge(publishDirectory);
         VerifyAclResultValidation(publishDirectory);
@@ -170,11 +171,14 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
         $"animestudio-cli-types-smoke-{Guid.NewGuid():N}");
     var inputDirectory = Path.Combine(temporaryDirectory, "input");
     var outputDirectory = Path.Combine(temporaryDirectory, "output");
+    var originalOutput = Console.Out;
+    using var capturedOutput = new StringWriter();
 
     try
     {
         Directory.CreateDirectory(inputDirectory);
         File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+        Console.SetOut(capturedOutput);
         var exitCode = (int)mainMethod.Invoke(
             null,
             [
@@ -198,6 +202,80 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
         Assert(
             !(bool)canParseMethod.Invoke(null, [mesh])!,
             "Explicit type filters must disable unrequested default types.");
+        var output = capturedOutput.ToString().TrimEnd();
+        Assert(output.Contains("Run summary:", StringComparison.Ordinal), "CLI run summary is missing.");
+        Assert(
+            output.Contains("Input size before extraction: 0 B (0 bytes)", StringComparison.Ordinal),
+            "CLI run summary has an incorrect input size.");
+        Assert(
+            output.Contains("Output files: 0", StringComparison.Ordinal),
+            "CLI run summary has an incorrect output file count.");
+        Assert(
+            output.EndsWith("Output size: 0 B (0 bytes)", StringComparison.Ordinal),
+            "CLI run summary is not the final CLI output.");
+    }
+    finally
+    {
+        Console.SetOut(originalOutput);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyRunSummary(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var summaryType = RequireType(cliAssembly, "AnimeStudio.CLI.RunSummary");
+    var formatElapsedMethod = summaryType.GetMethod(
+        "FormatElapsed",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "FormatElapsed");
+    var formatByteSizeMethod = summaryType.GetMethod(
+        "FormatByteSize",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "FormatByteSize");
+    var measureDirectoryMethod = summaryType.GetMethod(
+        "MeasureDirectory",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "MeasureDirectory");
+
+    Assert(
+        (string)formatElapsedMethod.Invoke(null, [TimeSpan.FromSeconds(12345)])!
+            == "03:25:45 (12345s)",
+        "Run summary elapsed-time format is incorrect.");
+    Assert(
+        (string)formatElapsedMethod.Invoke(null, [TimeSpan.FromSeconds(97261)])!
+            == "27:01:01 (97261s)",
+        "Run summary elapsed-time format must support more than 24 hours.");
+    Assert(
+        (string)formatByteSizeMethod.Invoke(null, [1536L])!
+            == "1.50 KiB (1,536 bytes)",
+        "Run summary byte-size format is incorrect.");
+
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-cli-summary-smoke-{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(temporaryDirectory, "nested"));
+        File.WriteAllBytes(Path.Combine(temporaryDirectory, "first.bin"), new byte[3]);
+        File.WriteAllBytes(Path.Combine(temporaryDirectory, "nested", "second.bin"), new byte[5]);
+        var statistics = measureDirectoryMethod.Invoke(null, [temporaryDirectory])
+            ?? throw new InvalidOperationException("Run summary returned no directory statistics.");
+        var statisticsType = statistics.GetType();
+
+        Assert(
+            (long)(statisticsType.GetProperty("FileCount")?.GetValue(statistics)
+                ?? throw new MissingMemberException(statisticsType.FullName, "FileCount")) == 2,
+            "Run summary directory file count is incorrect.");
+        Assert(
+            (long)(statisticsType.GetProperty("TotalBytes")?.GetValue(statistics)
+                ?? throw new MissingMemberException(statisticsType.FullName, "TotalBytes")) == 8,
+            "Run summary directory byte count is incorrect.");
     }
     finally
     {
