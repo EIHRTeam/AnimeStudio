@@ -101,4 +101,4 @@
 - 问题与决策：第一批改动不替换生产 writer，也不接入 `BuildAssetMap`；JSON 和 MessagePack 新生成结果必须与 fixture 逐字节一致，XML 因旧格式包含输出路径和 UTC 创建时间，仅在明确规范化这两个属性后比较结构。spool 对单字符串设 16 MiB、单记录设 64 MiB 硬上限，并按 64 MiB 写入窗口复查磁盘余量。
 - 未完成事项：增加阶段计时并建立 Debian AssetMap 基线；将构建路径接入 spool；实现容器二次解析和 XML/JSON/MessagePack 流式 writer/reader；补齐取消、模拟 OOM 和磁盘失败验收。
 - 后续注意事项：`StringCache` 仍可能在枚举大量唯一字符串时形成全局保留，接入生产路径时必须限定每次 pass 的缓存生命周期；MessagePack 3.1.4 仍有已知 NU1903；在 fixture 原型通过前不得替换当前 LZ4 block-array writer。
-- 起止提交：`c846a7b` -> 进行中。
+- 起止提交：`c846a7b` -> `3b4603f`（另含本会话文档收尾提交）。
