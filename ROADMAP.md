@@ -41,6 +41,8 @@ The detailed implementation and acceptance criteria are in `PLAN.md`.
 
 ## Phase 4 - Texture, Sprite, FBX, TypeTree, and Mesh Memory Reduction
 
+- Reduce the full-directory Convert export peak observed at 11,474,792 KiB
+  while writing 1,161,481 files; keep the container-only memory gate separate.
 - Release converted textures incrementally.
 - Add a bounded SpriteAtlas decode cache.
 - Batch FBX intermediate data and texture transfer.
