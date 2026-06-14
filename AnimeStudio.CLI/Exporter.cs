@@ -14,6 +14,7 @@ namespace AnimeStudio.CLI
     internal static class Exporter
     {
         private static int fbxUnavailableWarningLogged;
+        private static int optimizedAnimatorWarningLogged;
 
         public static bool ExportTexture2D(AssetItem item, string exportPath)
         {
@@ -469,7 +470,7 @@ namespace AnimeStudio.CLI
             var m_Animator = (Animator)item.Asset;
             if (!TryGetAnimatorConversionSupport(m_Animator, out var reason))
             {
-                Logger.Warning(
+                LogUnsupportedAnimator(
                     $"Skipping optimized Animator \"{item.Text}\" " +
                     $"(PathID {item.m_PathID}, file {item.SourceFile.fileName}): " +
                     reason);
@@ -530,7 +531,7 @@ namespace AnimeStudio.CLI
             if (gameObject.m_Animator != null
                 && !TryGetAnimatorConversionSupport(gameObject.m_Animator, out var reason))
             {
-                Logger.Warning(
+                LogUnsupportedAnimator(
                     $"Skipping optimized GameObject \"{gameObject.m_Name}\": {reason}");
                 return false;
             }
@@ -606,6 +607,18 @@ namespace AnimeStudio.CLI
             }
 
             return false;
+        }
+
+        private static void LogUnsupportedAnimator(string message)
+        {
+            if (Interlocked.Exchange(ref optimizedAnimatorWarningLogged, 1) == 0)
+            {
+                Logger.Warning(
+                    $"{message} Further occurrences are logged only at verbose level.");
+                return;
+            }
+
+            Logger.Verbose(message);
         }
 
         private static bool TryGetAnimatorConversionSupport(Animator animator, out string reason)
