@@ -9,13 +9,15 @@
 
 ## Phase 1 - CLI-only .NET 10 and Container Streaming
 
-- Status: implementation complete; acceptance closure in progress
+- Status: completed
 - Branch: `feat/container-streaming`
 - Baseline commit: `71fdbf9`
 - Implementation commit: `cf1ad70`
-- Acceptance: memory, cleanup, parser, build, and package gates passed; strict
-  cross-run output identity remains unresolved because of pre-existing random
-  fallback names and volatile FBX metadata.
+- Acceptance: memory, cleanup, parser, build, package, and normalized output
+  compatibility gates passed. Deterministic files match by relative path and
+  SHA256; random fallback outputs match by content-hash multiset; FBX payloads
+  match after known volatile metadata normalization. Strict deterministic
+  fallback naming and FBX metadata are deferred to Phase 5.
 
 ### Session 2026-06-13-01
 
@@ -71,3 +73,21 @@
 - 未完成事项：无；Phase 1 关闭后应以本文为输入整体替换 `PLAN.md`，再开始 Phase 2 实现。
 - 后续注意事项：本文不替代三份权威开发文档；`PERF_ANALYZE_REPO.md` 的倍率均为静态估算，后续只能引用实测收益；MessagePack 流式化必须先固定旧格式 fixture 和兼容政策。
 - 起止提交：`55eba6e` -> `9fce159`（另含本会话文档收尾提交）。
+
+### 会话 2026-06-14-05
+
+- 本次目标：明确并关闭 Phase 1 输出兼容策略，完成最终门禁。
+- 完成内容：正式采用 normalized compatibility；同步 `ROADMAP.md`、`PLAN.md` 和本状态，将 Phase 1 标记完成并建立 Phase 2 AssetMap streaming 的详细计划。
+- 修改文件/接口：仅更新权威开发文档，不修改运行时接口。
+- 验证及指标：`dotnet build AnimeStudio.sln -c Release`、Core smoke、`win-x64`/`linux-x64`/`osx-arm64` 发布与 package smoke、`git diff --check` 和活跃文件旧 TFM/桌面项目引用扫描均通过；本次隔离发布临时目录已删除，默认 AnimeStudio 临时根目录不存在，无残留。构建仍有已知 `MessagePack` 3.1.4 NU1903。
+- 问题与决策：采用与 Roadmap 阶段边界一致的 normalized compatibility；确定性输出要求相对路径和 SHA256 一致，随机 fallback 输出按内容哈希多重集比较，FBX 按移除已知易变元数据后的 payload 比较；稳定 fallback 命名和 FBX 元数据确定性留在 Phase 5。不得将该结果表述为严格树字节一致。
+- 未完成事项：无；下一会话在 `feat/asset-map-streaming` 开始 Phase 2。
+- 后续注意事项：Phase 2 MessagePack 变更前必须固定旧 writer fixture 和兼容行为；继续保留现有容器与全量 Convert 内存基线。
+- 起止提交：`1a24296` -> 待本次文档提交。
+
+## Phase 2 - Asset Map Streaming
+
+- Status: active
+- Branch: `feat/asset-map-streaming`
+- Baseline commit: 待 Phase 1 收尾提交
+- Acceptance: 见 `PLAN.md`；尚未开始。

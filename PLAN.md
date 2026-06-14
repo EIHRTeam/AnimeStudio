@@ -1,69 +1,85 @@
-# Current Phase Plan: Container Streaming Acceptance Closure
+# Current Phase Plan: Asset Map Streaming
 
 ## Objective
 
-Close the final Phase 1 output-compatibility gate without misreporting
-non-deterministic output as byte-identical. The CLI-only .NET 10 migration,
-shared container storage, automated tests, and Debian memory gates are
-implemented and passing.
+Remove the process-wide `List<AssetEntry>` lifetime from AssetMap generation
+and consumption. Use a versioned disk-backed entry spool so XML, JSON, and
+MessagePack maps can be written and filtered with bounded memory while
+preserving existing schemas, filter order, and output compatibility.
 
-## 1. Preserve Acceptance Evidence
+## 1. Baseline and Compatibility Fixtures
 
-- Keep the Debian manifests for the original baseline and the fresh streaming
-  export.
-- Record exact counts for common files, path-only differences, and hash-only
-  differences.
-- Do not use the interrupted/resumed export as compatibility evidence because
-  a second run adds another set of random fallback filenames.
+- Add stage timing for loading, object scanning, container resolution,
+  filtering/spooling, and each map writer without changing default output
+  semantics.
+- Generate committed small XML, JSON, and MessagePack fixtures with the current
+  writer before replacing it.
+- Record the exact fixture hashes and verify all old fixtures remain readable.
+- Establish one fixed Debian AssetMap command and capture wall time, peak RSS,
+  managed GC metrics, temporary disk peak, final map size, and `iostat`.
 
-Current evidence:
+## 2. Disk-Backed Entry Spool
 
-- Both fresh trees contain 77,146 files.
-- 77,020 deterministic files have identical relative paths and SHA256 values.
-- Each tree has 88 JSON files with different fallback names but an identical
-  multiset of content hashes.
-- 38 common-path FBX files differ because the exporter embeds a creation time
-  and generated file identifier.
+- Introduce an internal versioned, length-delimited spool record.
+- Create spools under the existing AnimeStudio process temporary directory and
+  reuse its locking, stale cleanup, free-space checks, and explicit failures.
+- Append entries incrementally and keep an exact record count.
+- Support repeated bounded enumeration for multiple output formats.
+- Clean up spool data and lock files on success, cancellation, parse failure,
+  simulated OOM, and disk failure.
 
-## 2. Resolve the Compatibility Policy
+## 3. Bounded AssetMap Construction
 
-The phase cannot be marked complete until one of these policies is explicitly
-adopted:
+- Preserve current type, name, and container filter order.
+- Retain only per-input-file object relationships while scanning that file.
+- Spool enough unresolved data to apply `ResourceIndex` container resolution
+  after all source files have contributed.
+- Release each file's loaded assets, object dictionaries, and relationship
+  lists before processing the next file.
+- Do not introduce object-level parallelism or unbounded channels.
 
-1. Strict byte identity:
-   - Replace `Path.GetRandomFileName()` export fallbacks with stable names.
-   - Make FBX metadata deterministic.
-   - Establish a new deterministic baseline and require exact tree equality.
-2. Normalized compatibility:
-   - Require exact path and SHA256 equality for deterministic outputs.
-   - Compare random fallback outputs by content-hash multiset.
-   - Compare FBX payloads with volatile metadata normalized.
-   - Track deterministic naming and FBX metadata as a later compatibility
-     work package.
+## 4. Streaming Writers
 
-The current roadmap keeps non-streaming compatibility work in the final phase,
-so normalized compatibility is the scope-consistent option, but it must not be
-silently substituted for the original strict criterion.
+- XML: keep the existing document shape and `XmlWriter` representation while
+  writing one entry at a time.
+- JSON: write the existing wrapper and `AssetEntries` array incrementally.
+- MessagePack: preserve key layout, enum representation, array lengths, and
+  LZ4 block-array compatibility. Prototype against the legacy fixture before
+  replacing `MessagePackSerializer.Serialize`.
+- If MessagePack cannot remain byte-compatible, stop and record an explicit
+  format policy rather than silently changing it.
 
-## 3. Final Phase 1 Checks
+## 5. Streaming Readers
 
-After the compatibility policy is resolved:
+- Keep the XML reader incremental.
+- Parse JSON entries one at a time and retain only unique matching `Source`
+  values.
+- Parse MessagePack incrementally or through a bounded disk-backed adapter.
+- Preserve current type, name, and container matching behavior and source
+  ordering.
 
-- Re-run `dotnet build AnimeStudio.sln -c Release`.
-- Re-run Core smoke and all three RID package smoke checks.
-- Run `git diff --check` and the active-file legacy reference scan.
-- Confirm the Debian temporary run directory is empty.
-- Confirm `oom_kill` remains unchanged.
-- Update `STATUS.md` with the accepted policy and final commit.
+## 6. Automated Acceptance
 
-## 4. Phase Transition
+- Synthetic large-map tests prove entries are not retained in a global list.
+- XML and JSON structures remain equivalent to legacy fixtures.
+- MessagePack legacy fixtures remain readable and new output satisfies the
+  approved compatibility policy.
+- Old and new readers return identical filtered source sets.
+- Repeated spool enumeration returns identical entries without retention.
+- Cancellation, parse failure, disk-full simulation, and simulated OOM leave
+  no spool or lock residue.
+- `dotnet build AnimeStudio.sln -c Release`, Core smoke, and all three RID
+  package smoke checks pass.
+- `git diff --check` and active-file legacy reference scans pass.
 
-Only after the output gate closes:
+## 7. Debian Acceptance
 
-- Mark Phase 1 completed in `STATUS.md` and `ROADMAP.md`.
-- Create `feat/asset-map-streaming`.
-- Replace this file with the detailed AssetMap streaming plan.
+- Push the exact validation commit and check it out on the authorized Debian
+  13 server.
+- Re-run the fixed AssetMap command and record wall time, peak RSS, GC metrics,
+  temporary disk peak, final map size, disk metrics, cleanup, and `oom_kill`.
+- Require lower peak retained memory than the baseline without increasing the
+  existing container-only or full Convert memory regressions.
+- Preserve output compatibility for every enabled map format.
 
-The next phase will remove the complete `List<AssetEntry>` build, add a
-disk-backed entry spool, stream XML/JSON/MessagePack generation and filtering,
-and preserve or explicitly version each existing map format.
+Phase 2 is complete only when every automated and Debian criterion passes.

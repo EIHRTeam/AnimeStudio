@@ -22,17 +22,27 @@ Status: completed.
 
 ## Phase 1 - CLI-only .NET 10 and Container Streaming
 
-Status: implementation complete; acceptance closure in progress.
+Status: completed.
 
-Active branch: `feat/container-streaming`.
+Completion branch: `feat/container-streaming`.
 
-The detailed implementation and acceptance criteria are in `PLAN.md`.
+Acceptance used normalized compatibility because the legacy exporter emits
+random long-path fallback names and volatile FBX metadata. Deterministic files
+must match by relative path and SHA256; fallback files match by content-hash
+multiset; FBX payloads match after normalizing the known volatile metadata.
+Strict deterministic naming and FBX metadata remain Phase 5 work.
 
 ## Phase 2 - Asset Map Streaming
+
+Status: active.
+
+Active branch: `feat/asset-map-streaming`.
 
 - Generate and consume XML, JSON, and MessagePack maps incrementally.
 - Use disk-backed staging for cross-file container-reference resolution.
 - Preserve existing formats and deterministic output bytes.
+
+The detailed implementation and acceptance criteria are in `PLAN.md`.
 
 ## Phase 3 - Text and Resource Export Streaming
 
