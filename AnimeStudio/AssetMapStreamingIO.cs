@@ -1272,12 +1272,14 @@ namespace AnimeStudio
         {
             private const int InitialSegmentLength = 4096;
             private const int MinimumSegmentLength = 32 * 1024;
+            private const int MaximumPooledSegmentLength = 64 * 1024;
+            private const int MaximumOutstandingSegmentsPerBucket = 100;
+            private const int MinimumArrayPoolBucketLength = 16;
 
             private readonly Stream output;
             private readonly BinaryWriter segmentLengths;
             private readonly TemporaryFileWorkspace workspace;
-            private readonly ArrayPool<byte> arrayPool =
-                ArrayPool<byte>.Create(80 * 1024, 100);
+            private readonly int[] outstandingSegmentsByBucket = new int[13];
             private byte[] buffer;
             private int written;
             private long remainingCheckedBytes = FreeSpaceCheckInterval;
@@ -1349,12 +1351,7 @@ namespace AnimeStudio
                 }
 
                 disposed = true;
-                if (buffer != null)
-                {
-                    arrayPool.Return(buffer);
-                    buffer = null;
-                }
-
+                buffer = null;
                 segmentLengths.Dispose();
             }
 
@@ -1376,7 +1373,11 @@ namespace AnimeStudio
                 var requestedLength = sizeHint == 0
                     ? InitialSegmentLength
                     : Math.Max(MinimumSegmentLength, sizeHint);
-                buffer = arrayPool.Rent(requestedLength);
+                var segmentLength = RentCompatibleSegmentLength(requestedLength);
+                if (buffer == null || buffer.Length != segmentLength)
+                {
+                    buffer = new byte[segmentLength];
+                }
             }
 
             private void FlushSegment()
@@ -1397,9 +1398,44 @@ namespace AnimeStudio
                         ExtensionHeaderSize + GetUInt32WriteSize((uint)written));
                 }
 
-                arrayPool.Return(buffer);
-                buffer = null;
                 written = 0;
+            }
+
+            private int RentCompatibleSegmentLength(int requestedLength)
+            {
+                var bucketLength = MinimumArrayPoolBucketLength;
+                var bucketIndex = 0;
+                while (bucketLength < requestedLength
+                    && bucketLength < MaximumPooledSegmentLength)
+                {
+                    bucketLength *= 2;
+                    bucketIndex++;
+                }
+
+                if (bucketLength < requestedLength)
+                {
+                    return requestedLength;
+                }
+
+                while (bucketIndex < outstandingSegmentsByBucket.Length)
+                {
+                    if (outstandingSegmentsByBucket[bucketIndex]
+                        < MaximumOutstandingSegmentsPerBucket)
+                    {
+                        outstandingSegmentsByBucket[bucketIndex]++;
+                        return bucketLength;
+                    }
+
+                    if (bucketLength == MaximumPooledSegmentLength)
+                    {
+                        break;
+                    }
+
+                    bucketLength *= 2;
+                    bucketIndex++;
+                }
+
+                return requestedLength;
             }
 
             private void EnsureFreeSpace(int length)

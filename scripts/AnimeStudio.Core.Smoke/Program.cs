@@ -44,6 +44,7 @@ try
     VerifySilentStateRestoredAfterLoadFailure();
     VerifyAssetMapCompatibilityFixtures();
     VerifyAssetMapStreamingBoundaryCompatibility();
+    VerifyAssetMapMessagePackPoolBoundaryCompatibility();
     VerifyAssetMapStreamingReaders();
     VerifySyntheticLargeAssetMapStreaming();
     VerifyAssetMapStreamingExceptionalCleanup();
@@ -556,6 +557,84 @@ static void VerifyAssetMapStreamingBoundaryCompatibility()
         Assert(
             XNode.DeepEquals(expectedXml, actualXml),
             "Streaming XML changed the normalized legacy structure.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapMessagePackPoolBoundaryCompatibility()
+{
+    const int entryCount = 15_000;
+    var root = CreateTemporaryRoot();
+    var legacyDirectory = Path.Combine(root, "legacy");
+    var streamingDirectory = Path.Combine(root, "streaming");
+    var temporaryDirectory = Path.Combine(root, "temporary");
+    var repeatedName = new string('p', 640);
+    var entries = new List<AssetEntry>(entryCount);
+    Directory.CreateDirectory(legacyDirectory);
+    Directory.CreateDirectory(streamingDirectory);
+
+    try
+    {
+        for (var index = 0; index < entryCount; index++)
+        {
+            entries.Add(new AssetEntry
+            {
+                Name = repeatedName,
+                Container = $"pool/container/{index % 127:D3}",
+                Source = $"input/{index % 31:D2}.assets",
+                PathID = index,
+                Type = ClassIDType.TextAsset,
+                Hash = $"pool-hash-{index:D8}",
+                Offset = index * 8L
+            });
+        }
+
+        using (var mapFile = File.Create(
+            Path.Combine(legacyDirectory, "pool-boundary.map")))
+        {
+            MessagePackSerializer.Serialize(
+                mapFile,
+                new AssetMap
+                {
+                    GameType = GameType.ArknightsEndfield,
+                    AssetEntries = entries
+                },
+                MessagePackSerializerOptions.Standard.WithCompression(
+                    MessagePackCompression.Lz4BlockArray));
+        }
+
+        using (var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+        {
+            TemporaryDirectory = temporaryDirectory
+        }))
+        {
+            foreach (var entry in entries)
+            {
+                spool.Append(AssetMapEntryRecord.FromAssetEntry(entry));
+            }
+
+            spool.Seal();
+            AssetMapStreamingIO.WriteMaps(
+                spool,
+                new Game(GameType.ArknightsEndfield, "ArknightsEndfield"),
+                "pool-boundary",
+                streamingDirectory,
+                ExportListType.MessagePack,
+                new ContainerStorageOptions
+                {
+                    TemporaryDirectory = temporaryDirectory
+                });
+        }
+
+        Assert(
+            File.ReadAllBytes(Path.Combine(legacyDirectory, "pool-boundary.map"))
+                .SequenceEqual(File.ReadAllBytes(
+                    Path.Combine(streamingDirectory, "pool-boundary.map"))),
+            "Streaming MessagePack changed bytes after exhausting pooled 32/64 KiB segments.");
     }
     finally
     {
