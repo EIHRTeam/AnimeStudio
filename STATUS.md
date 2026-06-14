@@ -83,11 +83,11 @@
 - 问题与决策：采用与 Roadmap 阶段边界一致的 normalized compatibility；确定性输出要求相对路径和 SHA256 一致，随机 fallback 输出按内容哈希多重集比较，FBX 按移除已知易变元数据后的 payload 比较；稳定 fallback 命名和 FBX 元数据确定性留在 Phase 5。不得将该结果表述为严格树字节一致。
 - 未完成事项：无；下一会话在 `feat/asset-map-streaming` 开始 Phase 2。
 - 后续注意事项：Phase 2 MessagePack 变更前必须固定旧 writer fixture 和兼容行为；继续保留现有容器与全量 Convert 内存基线。
-- 起止提交：`1a24296` -> 待本次文档提交。
+- 起止提交：`1a24296` -> `a0a7176`（另含本会话文档收尾提交）。
 
 ## Phase 2 - Asset Map Streaming
 
 - Status: active
 - Branch: `feat/asset-map-streaming`
-- Baseline commit: 待 Phase 1 收尾提交
+- Baseline commit: `a0a7176`
 - Acceptance: 见 `PLAN.md`；尚未开始。
