@@ -10,6 +10,9 @@ namespace AnimeStudio
     public static class StringCache
     {
         private static readonly Dictionary<uint, string> _cache = new();
+
+        internal static int Count => _cache.Count;
+
         public static string Get(string value)
         {
             if (value == null) return null;

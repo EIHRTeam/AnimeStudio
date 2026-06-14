@@ -112,15 +112,15 @@
 - 问题与决策：计时仅增加 Info 级诊断，不修改 XML、JSON、MessagePack schema、序列化选项或输出字节；加载 pass 数包含一次 split 预处理和每个输入文件一次加载，便于固定命令横向比较。无效输入 smoke 暴露的 silent 状态泄漏必须修复，否则失败路径会吞掉基线诊断。
 - 未完成事项：提交并推送精确验证版本后，在 Debian 13 运行固定 AssetMap 命令，记录 wall time、峰值 RSS、GC、临时磁盘、最终 map 和 `iostat` 基线；随后把生产构建路径接入 spool，并实现流式 writer/reader。
 - 后续注意事项：当前仍保留全量 `List<AssetEntry>`，本次只建立测量边界；`StringCache` 的 pass 生命周期约束仍需在 spool 接入时落实；MessagePack 3.1.4 的 NU1903 仍为已知警告。
-- 起止提交：`93685d6` -> 当前工作树（未提交）。
+- 起止提交：`93685d6` -> `d6cd765`。
 
 ### 会话 2026-06-14-08
 
 - 本次目标：持续推进并完整关闭 Phase 2，逐项实现和验证生产 AssetMap 有界构建、三格式流式读写、异常清理以及 Debian 13 基线与回归验收。
-- 完成内容：进行中；已重新核对 `ROADMAP.md`、`PLAN.md`、`STATUS.md`、`PERF_NEXT_STEP.md` 和当前工作树，确认会话 07 的阶段计时改动尚未提交，Phase 2 核心生产路径仍待接入 spool。
-- 修改文件/接口：当前仅建立本会话状态记录；后续修改以 `PLAN.md` 的验收项为边界。
-- 验证及指标：待补充。
-- 问题与决策：完成判定必须逐项具备自动化和 Debian 实机证据；基线与回归均须通过 GitHub 上的精确提交交付，不以未提交工作树或直接传输作为发布溯源。
-- 未完成事项：生产有界构建、XML/JSON/MessagePack 流式 writer/reader、异常清理验收、三 RID 门禁、Debian 基线和回归。
-- 后续注意事项：不得修改或提交用户的未跟踪 `PERF_ANALYZE_REPO.md`；不得在 MessagePack fixture 兼容未证明前替换旧 writer。
-- 起止提交：`93685d6` -> 当前工作树（进行中）。
+- 完成内容：会话 07 的计时改动已以 `d6cd7652ffa8f1ac8d797119270f7142b33994f5` 提交并推送，Debian 13 从 GitHub 检出该精确提交并完成固定 AssetMap 基线。生产构建现使用 unresolved/resolved 两阶段版本化磁盘 spool；每个顶层输入结束或异常时释放 `AssetsManager`、对象字典和 `StringCache`。XML、JSON、MessagePack writer 均按条目流式输出；JSON/XML reader 按条目解析，MessagePack reader 将 LZ4 block-array 有界解压到临时工作区后流式筛选。旧 GUI Asset Browser 专用的 `ResourceMap` 和 CLI 中未使用的重复 writer 已删除。
+- 修改文件/接口：新增内部 `AssetMapEntryRecord` 和 `AssetMapStreamingIO`；扩展 `AssetMapEntrySpool` 为不经过全局字符串缓存的可重复记录枚举并加入测试故障注入；更新 `AssetsHelper`、`AssetsManager.Clear`、Core smoke 和 CLI 遗留代码。MessagePack writer 固定匹配 3.1.4 的 sequence 分段和 LZ4 block-array 字节；格式依赖版本不满足时显式失败，不静默改变格式。
+- 验证及指标：Debian 基线固定命令为 `ANIMESTUDIO_TEMP_DIR=<run>/temp ./AnimeStudio.CLI <68B3B9B8EB82E88FBFE6A313E6B18FB6.chk> <run>/output --game ArknightsEndfield --map_op AssetMap --map_type MessagePack,XML,JSON --map_name phase2-baseline`。精确输入 1,812,594,931 字节，退出码 0，wall 11:22.47，峰值 RSS 6,957,772 KiB；283,596 条资产，Loading 456,177.784 ms、Object scanning 217,843.369 ms、Container resolution 0.438 ms、Filtering/spooling 41.651 ms、XML 943.054 ms、JSON 1,119.385 ms、MessagePack 478.134 ms。`System.Runtime` 每秒 counters 汇总分配 40,195,711,968 字节，Gen0/1/2 GC 3573/1194/12 次，GC pause 19.018868 秒，最大 committed managed memory 6,877,892,608 字节，最大 working set 7,011,201,024 字节。临时磁盘峰值 5,283,871,523 字节；`vda` 684 个样本平均读 4,457.81 KiB/s、写 9,612.96 KiB/s、read await 0.814 ms、write await 1.816 ms、queue 0.847、util 16.291%，最大 util 95.6%。输出 JSON 122,482,551 字节/SHA256 `1c57f69e2e956eb111751ed83ca7d1a4d865e5a3268001cae74bbab50eff82e2`，MessagePack 15,932,259 字节/SHA256 `76a4fa163604ef4e0771366803c816eaee7f7d4ad20fe5a30cb68a6d7ce0a003`，XML 113,161,179 字节，规范化 `filename`/`createdAt` 后 SHA256 `cfb169161a7e3d9495eccbe80b65f196fb9a9874851ad29befeaed1eba9b6d41`；临时目录清空，`oom_kill` 0 -> 0。本地 `dotnet build AnimeStudio.sln -c Release`、Core smoke、macOS ARM64 动态 package/runtime smoke、Linux x64 与 Windows x64 跨平台 package smoke、`git diff --check` 和活跃项目旧 TFM/桌面引用扫描均通过。Core smoke 覆盖旧 fixture 哈希、4,096 条含 40 KiB 字符串的 JSON/MessagePack 字节差分、XML 规范化等价、20,000 条唯一字符串 synthetic map、重复 spool pass、三格式 reader/filter/source 顺序、大小写兼容、取消、解析失败、模拟磁盘失败和模拟 OOM 清理；默认临时根目录无残留。
+- 问题与决策：完成判定必须逐项具备自动化和 Debian 实机证据；基线与回归均须通过 GitHub 上的精确提交交付，不以未提交工作树或直接传输作为发布溯源。MessagePack 3.1.4 的 LZ4 block-array 字节受 sequence 分段影响，因此实现和大尺寸差分测试同时固定该依赖；现有 `NU1903` 仍为已知警告。`ResourceMap` 的历史调用者仅存在于已移除 GUI，保留它会继续提供进程级完整 `List<AssetEntry>`。
+- 未完成事项：提交并推送最终精确验证版本；按同一 Debian 固定命令复测内存、GC、磁盘、输出哈希和清理；重跑 container-only/full Convert 内存门禁；所有实机标准通过后关闭 Phase 2 文档。
+- 后续注意事项：不得修改或提交用户的未跟踪 `PERF_ANALYZE_REPO.md`；Debian 最终输出必须与基线 JSON/MessagePack 哈希一致，XML 仅规范化 `filename`/`createdAt` 后比较。
+- 起止提交：`d6cd765` -> 当前工作树（进行中）。

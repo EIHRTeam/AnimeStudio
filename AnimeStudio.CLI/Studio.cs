@@ -1,13 +1,10 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using static AnimeStudio.CLI.Exporter;
 using System.Globalization;
-using System.Xml;
 
 namespace AnimeStudio.CLI
 {
@@ -608,55 +605,6 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
-        }
-
-        public static void ExportAssetsMap(string savePath, List<AssetEntry> toExportAssets, string exportListName, ExportListType exportListType)
-        {
-            string filename;
-            switch (exportListType)
-            {
-                case ExportListType.XML:
-                    filename = Path.Combine(savePath, $"{exportListName}.xml");
-                    var settings = new XmlWriterSettings() { Indent = true };
-                    using (XmlWriter writer = XmlWriter.Create(filename, settings))
-                    {
-                        writer.WriteStartDocument();
-                        writer.WriteStartElement("Assets");
-                        writer.WriteAttributeString("filename", filename);
-                        writer.WriteAttributeString("createdAt", DateTime.UtcNow.ToString("s"));
-                        foreach (var asset in toExportAssets)
-                        {
-                            writer.WriteStartElement("Asset");
-                            writer.WriteElementString("Name", asset.Name);
-                            writer.WriteElementString("Container", asset.Container);
-                            writer.WriteStartElement("Type");
-                            writer.WriteAttributeString("id", ((int)asset.Type).ToString());
-                            writer.WriteValue(asset.Type.ToString());
-                            writer.WriteEndElement();
-                            writer.WriteElementString("PathID", asset.PathID.ToString());
-                            writer.WriteElementString("Source", asset.Source);
-                            writer.WriteEndElement();
-                        }
-                        writer.WriteEndElement();
-                        writer.WriteEndDocument();
-                    }
-                    break;
-                case ExportListType.JSON:
-                    filename = Path.Combine(savePath, $"{exportListName}.json");
-                    using (StreamWriter file = File.CreateText(filename))
-                    {
-                        JsonSerializer serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.Indented };
-                        serializer.Converters.Add(new StringEnumConverter());
-                        serializer.Serialize(file, toExportAssets);
-                    }
-                    break;
-            }
-
-            var statusText = $"Finished exporting asset list with {toExportAssets.Count()} items.";
-
-            Logger.Info(statusText);
-
-            Logger.Info($"AssetMap build successfully !!");
         }
 
         public static TypeTree MonoBehaviourToTypeTree(MonoBehaviour m_MonoBehaviour)

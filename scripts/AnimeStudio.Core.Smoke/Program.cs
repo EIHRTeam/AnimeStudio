@@ -2,10 +2,14 @@ using System.Runtime.CompilerServices;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Globalization;
+using System.Xml;
 using System.Xml.Linq;
 using AnimeStudio;
 using MessagePack;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 
 if (args.Length == 2 && args[0] == "--update-asset-map-fixtures")
 {
@@ -38,6 +42,10 @@ try
     VerifyAssetMapBuildMetrics();
     VerifySilentStateRestoredAfterLoadFailure();
     VerifyAssetMapCompatibilityFixtures();
+    VerifyAssetMapStreamingBoundaryCompatibility();
+    VerifyAssetMapStreamingReaders();
+    VerifySyntheticLargeAssetMapStreaming();
+    VerifyAssetMapStreamingExceptionalCleanup();
     VerifyFailedSliceHandoffCleanup();
     VerifyExceptionalCleanup<OperationCanceledException>();
     VerifyExceptionalCleanup<OutOfMemoryException>();
@@ -459,6 +467,423 @@ static void VerifyAssetMapCompatibilityFixtures()
     }
 }
 
+static void VerifyAssetMapStreamingBoundaryCompatibility()
+{
+    var root = CreateTemporaryRoot();
+    var legacyDirectory = Path.Combine(root, "legacy");
+    var streamingDirectory = Path.Combine(root, "streaming");
+    var temporaryDirectory = Path.Combine(root, "temporary");
+    var entries = CreateBoundaryAssetMapEntries();
+    Directory.CreateDirectory(legacyDirectory);
+    Directory.CreateDirectory(streamingDirectory);
+
+    try
+    {
+        WriteLegacyAssetMaps(
+            entries,
+            GameType.ArknightsEndfield,
+            "boundary-map",
+            legacyDirectory);
+        WriteStreamingAssetMaps(
+            entries,
+            GameType.ArknightsEndfield,
+            "boundary-map",
+            streamingDirectory,
+            temporaryDirectory);
+
+        Assert(
+            File.ReadAllBytes(Path.Combine(legacyDirectory, "boundary-map.json"))
+                .SequenceEqual(File.ReadAllBytes(
+                    Path.Combine(streamingDirectory, "boundary-map.json"))),
+            "Streaming JSON changed bytes across serialization boundaries.");
+        Assert(
+            File.ReadAllBytes(Path.Combine(legacyDirectory, "boundary-map.map"))
+                .SequenceEqual(File.ReadAllBytes(
+                    Path.Combine(streamingDirectory, "boundary-map.map"))),
+            "Streaming MessagePack changed LZ4 block-array bytes.");
+
+        var expectedXml = XDocument.Load(
+            Path.Combine(legacyDirectory, "boundary-map.xml"));
+        var actualXml = XDocument.Load(
+            Path.Combine(streamingDirectory, "boundary-map.xml"));
+        NormalizeAssetMapXml(expectedXml);
+        NormalizeAssetMapXml(actualXml);
+        Assert(
+            XNode.DeepEquals(expectedXml, actualXml),
+            "Streaming XML changed the normalized legacy structure.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapStreamingReaders()
+{
+    var root = CreateTemporaryRoot();
+    var outputDirectory = Path.Combine(root, "output");
+    var temporaryDirectory = Path.Combine(root, "temporary");
+    var entries = new List<AssetEntry>
+    {
+        new()
+        {
+            Name = "AlphaTexture",
+            Container = "characters/alpha",
+            Source = "input/first.assets",
+            PathID = 1,
+            Type = ClassIDType.Texture2D,
+            Hash = "a",
+            Offset = 10
+        },
+        new()
+        {
+            Name = "BetaText",
+            Container = "tables/beta",
+            Source = "input/second.assets",
+            PathID = 2,
+            Type = ClassIDType.TextAsset,
+            Hash = "b",
+            Offset = 20
+        },
+        new()
+        {
+            Name = "AlphaDuplicateSource",
+            Container = "characters/alpha/duplicate",
+            Source = "input/first.assets",
+            PathID = 3,
+            Type = ClassIDType.Texture2D,
+            Hash = "c",
+            Offset = 30
+        },
+        new()
+        {
+            Name = "AlphaOther",
+            Container = "effects/alpha",
+            Source = "input/third.assets",
+            PathID = 4,
+            Type = ClassIDType.Texture2D,
+            Hash = "d",
+            Offset = 40
+        }
+    };
+    Directory.CreateDirectory(outputDirectory);
+
+    try
+    {
+        WriteStreamingAssetMaps(
+            entries,
+            GameType.ArknightsEndfield,
+            "reader-map",
+            outputDirectory,
+            temporaryDirectory);
+        AssetsHelper.SetContainerStorageOptions(new ContainerStorageOptions
+        {
+            TemporaryDirectory = temporaryDirectory
+        });
+
+        foreach (var format in new[]
+        {
+            (Type: ExportListType.XML, Extension: ".xml"),
+            (Type: ExportListType.JSON, Extension: ".json"),
+            (Type: ExportListType.MessagePack, Extension: ".map")
+        })
+        {
+            var path = Path.Combine(outputDirectory, $"reader-map{format.Extension}");
+            var allSources = AssetsHelper.ParseAssetMap(
+                path,
+                format.Type,
+                [],
+                [],
+                []);
+            Assert(
+                allSources.SequenceEqual(
+                    [
+                        "input/first.assets",
+                        "input/second.assets",
+                        "input/third.assets"
+                    ]),
+                $"{format.Type} reader did not preserve first-source order.");
+
+            var filteredSources = AssetsHelper.ParseAssetMap(
+                path,
+                format.Type,
+                [ClassIDType.Texture2D],
+                [new Regex("^Alpha", RegexOptions.IgnoreCase)],
+                [new Regex("^characters/", RegexOptions.IgnoreCase)]);
+            Assert(
+                filteredSources.SequenceEqual(["input/first.assets"]),
+                $"{format.Type} reader changed combined filter behavior.");
+        }
+
+        var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        foreach (var format in new[]
+        {
+            (Type: ExportListType.XML, Extension: ".xml"),
+            (Type: ExportListType.JSON, Extension: ".json"),
+            (Type: ExportListType.MessagePack, Extension: ".map")
+        })
+        {
+            var sources = AssetsHelper.ParseAssetMap(
+                Path.Combine(
+                    fixtureDirectory,
+                    $"legacy-asset-map{format.Extension}"),
+                format.Type,
+                [],
+                [],
+                []);
+            Assert(
+                sources.SequenceEqual(
+                    ["input/1001.assets", "input/1002.assets"]),
+                $"{format.Type} streaming reader cannot read the legacy fixture.");
+        }
+
+        var lowercaseJsonPath = Path.Combine(outputDirectory, "lowercase.json");
+        File.WriteAllText(
+            lowercaseJsonPath,
+            """
+            {
+              "assetentries": [
+                {
+                  "name": "Lowercase",
+                  "container": "characters/lowercase",
+                  "source": "input/lowercase.assets",
+                  "type": "Texture2D"
+                }
+              ]
+            }
+            """);
+        var lowercaseSources = AssetsHelper.ParseAssetMap(
+            lowercaseJsonPath,
+            ExportListType.JSON,
+            [],
+            [],
+            []);
+        Assert(
+            lowercaseSources.SequenceEqual(["input/lowercase.assets"]),
+            "JSON streaming reader lost case-insensitive property matching.");
+    }
+    finally
+    {
+        AssetsHelper.SetContainerStorageOptions(new ContainerStorageOptions());
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifySyntheticLargeAssetMapStreaming()
+{
+    const int entryCount = 20_000;
+    const int sourceCount = 64;
+    var root = CreateTemporaryRoot();
+    var outputDirectory = Path.Combine(root, "output");
+    var temporaryDirectory = Path.Combine(root, "temporary");
+    Directory.CreateDirectory(outputDirectory);
+    StringCache.Clear();
+
+    try
+    {
+        using (var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+        {
+            TemporaryDirectory = temporaryDirectory
+        }))
+        {
+            for (var index = 0; index < entryCount; index++)
+            {
+                spool.Append(new AssetMapEntryRecord
+                {
+                    Name = $"Unique-Name-{index:D6}",
+                    Container = $"container/{index:D6}",
+                    Source = $"input/{index % sourceCount:D2}.assets",
+                    PathID = index,
+                    Type = ClassIDType.TextAsset,
+                    Hash = $"hash-{index:D6}",
+                    Offset = index * 8L
+                });
+            }
+
+            Assert(
+                StringCache.Count == 0,
+                "Synthetic AssetMap construction populated the process StringCache.");
+            spool.Seal();
+
+            for (var pass = 0; pass < 2; pass++)
+            {
+                long count = 0;
+                foreach (var entry in spool.ReadEntries())
+                {
+                    count++;
+                    Assert(
+                        entry.Name.StartsWith("Unique-Name-", StringComparison.Ordinal),
+                        "Synthetic spool returned a corrupted unique name.");
+                }
+
+                Assert(count == entryCount, "Synthetic spool pass lost entries.");
+                Assert(
+                    StringCache.Count == 0,
+                    "Repeated spool enumeration retained strings globally.");
+            }
+
+            AssetMapStreamingIO.WriteMaps(
+                spool,
+                new Game(GameType.Normal, "Normal"),
+                "synthetic-large",
+                outputDirectory,
+                ExportListType.XML
+                    | ExportListType.JSON
+                    | ExportListType.MessagePack,
+                new ContainerStorageOptions
+                {
+                    TemporaryDirectory = temporaryDirectory
+                });
+            Assert(
+                StringCache.Count == 0,
+                "Streaming writers retained synthetic entries in StringCache.");
+        }
+
+        Assert(
+            !Directory.EnumerateDirectories(temporaryDirectory, "run-*").Any(),
+            "Synthetic AssetMap streaming left a temporary workspace.");
+        foreach (var format in new[]
+        {
+            (Type: ExportListType.XML, Extension: ".xml"),
+            (Type: ExportListType.JSON, Extension: ".json"),
+            (Type: ExportListType.MessagePack, Extension: ".map")
+        })
+        {
+            var sources = AssetMapStreamingIO.ReadSources(
+                Path.Combine(
+                    outputDirectory,
+                    $"synthetic-large{format.Extension}"),
+                format.Type,
+                [],
+                [],
+                [],
+                new ContainerStorageOptions
+                {
+                    TemporaryDirectory = temporaryDirectory
+                });
+            Assert(
+                sources.Length == sourceCount,
+                $"{format.Type} synthetic reader retained the wrong source set.");
+        }
+
+        Assert(
+            StringCache.Count == 0,
+            "Synthetic AssetMap readers retained strings globally.");
+        Assert(
+            !Directory.EnumerateDirectories(temporaryDirectory, "run-*").Any(),
+            "Synthetic AssetMap readers left a temporary workspace.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapStreamingExceptionalCleanup()
+{
+    VerifyAssetMapSpoolFaultCleanup(
+        new IOException("Simulated disk-full failure."));
+    VerifyAssetMapSpoolFaultCleanup(
+        new OutOfMemoryException("Simulated AssetMap OOM."));
+
+    var root = CreateTemporaryRoot();
+    var outputDirectory = Path.Combine(root, "output");
+    var temporaryDirectory = Path.Combine(root, "temporary");
+    Directory.CreateDirectory(outputDirectory);
+    try
+    {
+        using (var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+        {
+            TemporaryDirectory = temporaryDirectory
+        }))
+        {
+            spool.Append(AssetMapEntryRecord.FromAssetEntry(
+                CreateAssetMapFixtureEntries()[0]));
+            spool.Seal();
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            AssertThrows<OperationCanceledException>(() =>
+                AssetMapStreamingIO.WriteMaps(
+                    spool,
+                    new Game(GameType.Normal, "Normal"),
+                    "cancelled",
+                    outputDirectory,
+                    ExportListType.MessagePack,
+                    new ContainerStorageOptions
+                    {
+                        TemporaryDirectory = temporaryDirectory
+                    },
+                    cancellationToken: cancellation.Token));
+        }
+
+        Assert(
+            !Directory.EnumerateDirectories(temporaryDirectory, "run-*").Any(),
+            "Cancelled AssetMap streaming left a temporary workspace.");
+
+        var malformed = Path.Combine(root, "malformed.map");
+        File.WriteAllBytes(malformed, [0x92, 0xd4, 0x62, 0x01]);
+        AssertThrows<Exception>(() =>
+            AssetMapStreamingIO.ReadSources(
+                malformed,
+                ExportListType.MessagePack,
+                [],
+                [],
+                [],
+                new ContainerStorageOptions
+                {
+                    TemporaryDirectory = temporaryDirectory
+                }));
+        Assert(
+            !Directory.EnumerateDirectories(temporaryDirectory, "run-*").Any(),
+            "Malformed MessagePack parsing left a temporary workspace.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyAssetMapSpoolFaultCleanup(Exception expected)
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        try
+        {
+            using var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+            {
+                TemporaryDirectory = root
+            }, operation =>
+            {
+                if (operation == AssetMapSpoolOperation.Appending)
+                {
+                    throw expected;
+                }
+            });
+            spool.Append(AssetMapEntryRecord.FromAssetEntry(
+                CreateAssetMapFixtureEntries()[0]));
+            throw new InvalidOperationException(
+                "AssetMap spool fault injection did not run.");
+        }
+        catch (Exception actual) when (ReferenceEquals(actual, expected))
+        {
+        }
+
+        Assert(
+            !Directory.EnumerateDirectories(root, "run-*").Any(),
+            $"{expected.GetType().Name} left an AssetMap spool workspace.");
+    }
+    finally
+    {
+        StringCache.Clear();
+        Directory.Delete(root, true);
+    }
+}
+
 static void VerifyAssetMapBuildMetrics()
 {
     var metrics = new AssetMapBuildMetrics();
@@ -573,6 +998,143 @@ static List<AssetEntry> CreateAssetMapFixtureEntries()
             Offset = -1
         }
     ];
+}
+
+static List<AssetEntry> CreateBoundaryAssetMapEntries()
+{
+    var entries = new List<AssetEntry>(4096);
+    for (var index = 0; index < entries.Capacity; index++)
+    {
+        var longName = index % 257 == 0
+            ? new string((char)('a' + index % 26), 40_000)
+            : $"Boundary-{index:D6}-{new string('n', index % 67)}";
+        entries.Add(new AssetEntry
+        {
+            Name = longName,
+            Container = $"container/{index % 31}/{new string('c', index % 71)}",
+            Source = $"input/{index % 97:D3}.assets",
+            PathID = index % 2 == 0 ? index : -index,
+            Type = index % 3 == 0
+                ? ClassIDType.Texture2D
+                : ClassIDType.TextAsset,
+            Hash = index % 11 == 0 ? null : $"hash-{index:D8}",
+            Offset = index * 4096L
+        });
+    }
+
+    return entries;
+}
+
+static void WriteLegacyAssetMaps(
+    List<AssetEntry> entries,
+    GameType gameType,
+    string name,
+    string outputDirectory)
+{
+    var previousCulture = Thread.CurrentThread.CurrentCulture;
+    try
+    {
+        Thread.CurrentThread.CurrentCulture =
+            new System.Globalization.CultureInfo("en-US");
+        var xmlPath = Path.Combine(outputDirectory, $"{name}.xml");
+        var xmlSettings = new XmlWriterSettings { Indent = true };
+        using (var writer = XmlWriter.Create(xmlPath, xmlSettings))
+        {
+            writer.WriteStartDocument();
+            writer.WriteStartElement("Assets");
+            writer.WriteAttributeString("filename", xmlPath);
+            writer.WriteAttributeString("createdAt", DateTime.UtcNow.ToString("s"));
+            foreach (var asset in entries)
+            {
+                writer.WriteStartElement("Asset");
+                writer.WriteElementString("Name", asset.Name);
+                writer.WriteElementString("Container", asset.Container);
+                writer.WriteStartElement("Type");
+                writer.WriteAttributeString("id", ((int)asset.Type).ToString());
+                writer.WriteValue(asset.Type.ToString());
+                writer.WriteEndElement();
+                writer.WriteElementString("PathID", asset.PathID.ToString());
+                writer.WriteElementString("Source", asset.Source);
+                writer.WriteEndElement();
+            }
+
+            writer.WriteEndElement();
+            writer.WriteEndDocument();
+        }
+
+        using (var file = File.CreateText(
+            Path.Combine(outputDirectory, $"{name}.json")))
+        {
+            var serializer = new JsonSerializer
+            {
+                Formatting = Newtonsoft.Json.Formatting.Indented
+            };
+            serializer.Converters.Add(new StringEnumConverter());
+            serializer.Serialize(file, new
+            {
+                GameType = gameType,
+                AssetEntries = entries
+            });
+        }
+
+        using var mapFile = File.Create(
+            Path.Combine(outputDirectory, $"{name}.map"));
+        MessagePackSerializer.Serialize(
+            mapFile,
+            new AssetMap
+            {
+                GameType = gameType,
+                AssetEntries = entries
+            },
+            MessagePackSerializerOptions.Standard.WithCompression(
+                MessagePackCompression.Lz4BlockArray));
+    }
+    finally
+    {
+        Thread.CurrentThread.CurrentCulture = previousCulture;
+        StringCache.Clear();
+    }
+}
+
+static void WriteStreamingAssetMaps(
+    IEnumerable<AssetEntry> entries,
+    GameType gameType,
+    string name,
+    string outputDirectory,
+    string temporaryDirectory)
+{
+    using var spool = new AssetMapEntrySpool(new ContainerStorageOptions
+    {
+        TemporaryDirectory = temporaryDirectory
+    });
+    foreach (var entry in entries)
+    {
+        spool.Append(AssetMapEntryRecord.FromAssetEntry(entry));
+    }
+
+    spool.Seal();
+    var previousCulture = Thread.CurrentThread.CurrentCulture;
+    try
+    {
+        Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+        AssetMapStreamingIO.WriteMaps(
+            spool,
+            new Game(gameType, gameType.ToString()),
+            name,
+            outputDirectory,
+            ExportListType.XML | ExportListType.JSON | ExportListType.MessagePack,
+            new ContainerStorageOptions
+            {
+                TemporaryDirectory = temporaryDirectory
+            });
+        Assert(
+            Thread.CurrentThread.CurrentCulture.Name == "fr-FR",
+            "Streaming AssetMap writers changed the calling thread culture.");
+    }
+    finally
+    {
+        Thread.CurrentThread.CurrentCulture = previousCulture;
+    }
 }
 
 static void AssertAssetEntryListsEqual(

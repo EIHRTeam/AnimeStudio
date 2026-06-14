@@ -666,6 +666,7 @@ namespace AnimeStudio
             foreach (var assetsFile in assetsFileList)
             {
                 assetsFile.Objects.Clear();
+                assetsFile.ObjectsDic.Clear();
                 assetsFile.reader.Close();
             }
             assetsFileList.Clear();

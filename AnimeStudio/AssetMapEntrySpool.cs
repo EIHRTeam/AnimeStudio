@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,6 +7,13 @@ using System.Text;
 
 namespace AnimeStudio
 {
+    internal enum AssetMapSpoolOperation
+    {
+        Created,
+        Appending,
+        Sealing
+    }
+
     internal sealed class AssetMapEntrySpool : IDisposable
     {
         private const int FormatVersion = 1;
@@ -18,6 +26,7 @@ namespace AnimeStudio
 
         private readonly TemporaryFileWorkspace workspace;
         private readonly string path;
+        private readonly Action<AssetMapSpoolOperation> faultInjector;
         private FileStream writeStream;
         private BinaryWriter writer;
         private long count;
@@ -25,8 +34,11 @@ namespace AnimeStudio
         private bool sealedForReading;
         private bool disposed;
 
-        internal AssetMapEntrySpool(ContainerStorageOptions options)
+        internal AssetMapEntrySpool(
+            ContainerStorageOptions options,
+            Action<AssetMapSpoolOperation> faultInjector = null)
         {
+            this.faultInjector = faultInjector;
             workspace = new TemporaryFileWorkspace(options);
             try
             {
@@ -45,6 +57,7 @@ namespace AnimeStudio
                 writer.Write(Magic);
                 writer.Write(FormatVersion);
                 writer.Write(0L);
+                faultInjector?.Invoke(AssetMapSpoolOperation.Created);
             }
             catch
             {
@@ -81,7 +94,7 @@ namespace AnimeStudio
             }
         }
 
-        internal void Append(AssetEntry entry)
+        internal void Append(AssetMapEntryRecord entry)
         {
             ArgumentNullException.ThrowIfNull(entry);
             ThrowIfDisposed();
@@ -90,6 +103,7 @@ namespace AnimeStudio
                 throw new InvalidOperationException("The AssetMap entry spool is sealed.");
             }
 
+            faultInjector?.Invoke(AssetMapSpoolOperation.Appending);
             var estimatedLength = EstimateRecordLength(entry);
             if (estimatedLength > remainingCheckedBytes)
             {
@@ -124,6 +138,11 @@ namespace AnimeStudio
             count = checked(count + 1);
         }
 
+        internal void Append(AssetEntry entry)
+        {
+            Append(AssetMapEntryRecord.FromAssetEntry(entry));
+        }
+
         internal void Seal()
         {
             ThrowIfDisposed();
@@ -132,6 +151,7 @@ namespace AnimeStudio
                 return;
             }
 
+            faultInjector?.Invoke(AssetMapSpoolOperation.Sealing);
             var endPosition = writeStream.Position;
             writeStream.Position = RecordCountOffset;
             writer.Write(count);
@@ -145,7 +165,7 @@ namespace AnimeStudio
             sealedForReading = true;
         }
 
-        internal IEnumerable<AssetEntry> ReadEntries()
+        internal AssetMapEntryEnumerable ReadEntries()
         {
             ThrowIfDisposed();
             if (!sealedForReading)
@@ -154,7 +174,7 @@ namespace AnimeStudio
                     "The AssetMap entry spool must be sealed before reading.");
             }
 
-            return ReadEntriesCore(path, count);
+            return new AssetMapEntryEnumerable(path, count);
         }
 
         public void Dispose()
@@ -170,7 +190,9 @@ namespace AnimeStudio
             workspace.Dispose();
         }
 
-        private static IEnumerable<AssetEntry> ReadEntriesCore(string path, long expectedCount)
+        private static IEnumerable<AssetMapEntryRecord> ReadEntriesCore(
+            string path,
+            long expectedCount)
         {
             using var stream = new FileStream(
                 path,
@@ -217,7 +239,7 @@ namespace AnimeStudio
                         $"AssetMap spool record {index} exceeds the file boundary.");
                 }
 
-                var entry = new AssetEntry
+                var entry = new AssetMapEntryRecord
                 {
                     Name = ReadNullableString(reader),
                     Container = ReadNullableString(reader),
@@ -244,7 +266,7 @@ namespace AnimeStudio
             }
         }
 
-        private static int EstimateRecordLength(AssetEntry entry)
+        private static int EstimateRecordLength(AssetMapEntryRecord entry)
         {
             var length = sizeof(int);
             length = checked(length + GetStringStorageLength(entry.Name));
@@ -328,6 +350,38 @@ namespace AnimeStudio
             if (disposed)
             {
                 throw new ObjectDisposedException(nameof(AssetMapEntrySpool));
+            }
+        }
+
+        internal sealed class AssetMapEntryEnumerable :
+            IEnumerable<AssetMapEntryRecord>,
+            IEnumerable<AssetEntry>
+        {
+            private readonly string path;
+            private readonly long expectedCount;
+
+            internal AssetMapEntryEnumerable(string path, long expectedCount)
+            {
+                this.path = path;
+                this.expectedCount = expectedCount;
+            }
+
+            public IEnumerator<AssetMapEntryRecord> GetEnumerator()
+            {
+                return ReadEntriesCore(path, expectedCount).GetEnumerator();
+            }
+
+            IEnumerator<AssetEntry> IEnumerable<AssetEntry>.GetEnumerator()
+            {
+                foreach (var entry in ReadEntriesCore(path, expectedCount))
+                {
+                    yield return entry.ToAssetEntry();
+                }
+            }
+
+            IEnumerator IEnumerable.GetEnumerator()
+            {
+                return GetEnumerator();
             }
         }
     }
