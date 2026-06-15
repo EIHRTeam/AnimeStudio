@@ -17,8 +17,10 @@ namespace AnimeStudio
         private readonly long memoryReservation;
         private readonly ContainerStorageManager manager;
         private long maximumWrittenPosition;
+        private long positionedBytesWritten;
         private int referenceCount = 1;
         private int ownerReleased;
+        private bool positionedWriteMode;
         private bool sealedForSlices;
         private bool backingDisposed;
 
@@ -121,14 +123,114 @@ namespace AnimeStudio
                     return;
                 }
 
-                if (maximumWrittenPosition != expectedLength)
+                var writtenLength = positionedWriteMode
+                    ? positionedBytesWritten
+                    : maximumWrittenPosition;
+                if (writtenLength != expectedLength)
                 {
                     throw new InvalidDataException(
-                        $"Container decompression produced {maximumWrittenPosition} bytes; expected {expectedLength} bytes.");
+                        $"Container decompression produced {writtenLength} " +
+                        $"bytes; expected {expectedLength} bytes.");
                 }
 
                 stream.Flush();
                 sealedForSlices = true;
+            }
+        }
+
+        internal void PrepareForPositionedWrites()
+        {
+            lock (sync)
+            {
+                ThrowIfOwnerReleased();
+                ThrowIfBackingDisposed();
+                ThrowIfSealed();
+                if (maximumWrittenPosition != 0 || positionedBytesWritten != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Positioned container writes must begin on an empty " +
+                        "backing store.");
+                }
+
+                positionedWriteMode = true;
+                stream.SetLength(expectedLength);
+            }
+        }
+
+        internal void WriteAt(
+            long absoluteOffset,
+            ReadOnlySpan<byte> buffer)
+        {
+            if (absoluteOffset < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(absoluteOffset));
+            }
+
+            var endPosition = checked(absoluteOffset + buffer.Length);
+            if (endPosition > expectedLength)
+            {
+                throw new InvalidDataException(
+                    $"Container write range [{absoluteOffset}, " +
+                    $"{endPosition}) exceeds expected length " +
+                    $"{expectedLength}.");
+            }
+
+            lock (sync)
+            {
+                ThrowIfOwnerReleased();
+                ThrowIfBackingDisposed();
+                ThrowIfSealed();
+                if (!positionedWriteMode)
+                {
+                    throw new InvalidOperationException(
+                        "PrepareForPositionedWrites must be called first.");
+                }
+            }
+
+            if (fileStream != null)
+            {
+                RandomAccess.Write(
+                    fileStream.SafeFileHandle,
+                    buffer,
+                    absoluteOffset);
+            }
+            else if (memoryBuffer != null)
+            {
+                buffer.CopyTo(
+                    memoryBuffer.AsSpan(
+                        checked(
+                            memoryBufferOffset
+                            + checked((int)absoluteOffset)),
+                        buffer.Length));
+            }
+            else
+            {
+                lock (sync)
+                {
+                    var previousPosition = stream.Position;
+                    try
+                    {
+                        stream.Position = absoluteOffset;
+                        stream.Write(buffer);
+                    }
+                    finally
+                    {
+                        stream.Position = previousPosition;
+                    }
+                }
+            }
+
+            lock (sync)
+            {
+                positionedBytesWritten = checked(
+                    positionedBytesWritten + buffer.Length);
+                if (positionedBytesWritten > expectedLength)
+                {
+                    throw new InvalidDataException(
+                        "Container positioned writes exceeded the expected " +
+                        "length.");
+                }
             }
         }
 
@@ -271,6 +373,11 @@ namespace AnimeStudio
                 ThrowIfOwnerReleased();
                 ThrowIfBackingDisposed();
                 ThrowIfSealed();
+                if (positionedWriteMode)
+                {
+                    throw new InvalidOperationException(
+                        "Sequential writes cannot follow positioned writes.");
+                }
                 if (stream.Position != maximumWrittenPosition)
                 {
                     throw new InvalidOperationException(

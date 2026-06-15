@@ -38,6 +38,7 @@ try
     VerifyObjectBoundedStringLength();
     VerifySharedSlices();
     VerifyConcurrentDiskSlices();
+    VerifyContainerBlockPipeline();
     VerifyConcurrentResourceReaders();
     VerifyMultiWorkerObjectParsing();
     VerifyBackingHashesAndCleanup();
@@ -268,7 +269,17 @@ static void VerifyConcurrentDiskSlices()
                 TemporaryDirectory = root
             });
         using var store = manager.Create(data.Length, "parallel.bundle");
-        store.Write(data);
+        store.PrepareForPositionedWrites();
+        const int chunkCount = 256;
+        var chunkLength = data.Length / chunkCount;
+        Parallel.For(0, chunkCount, iteration =>
+        {
+            var chunkIndex = iteration * 73 % chunkCount;
+            var offset = chunkIndex * chunkLength;
+            store.WriteAt(
+                offset,
+                data.AsSpan(offset, chunkLength));
+        });
         store.Seal();
 
         Parallel.For(0, 256, iteration =>
@@ -285,6 +296,233 @@ static void VerifyConcurrentDiskSlices()
     finally
     {
         Directory.Delete(root, true);
+    }
+}
+
+static void VerifyContainerBlockPipeline()
+{
+    const int blockCount = 32;
+    const int blockLength = 64 * 1024;
+    var data = new byte[blockCount * blockLength];
+    for (var index = 0; index < data.Length; index++)
+    {
+        data[index] = (byte)(index * 19);
+    }
+
+    var blocks = Enumerable.Range(0, blockCount)
+        .Select(_ => new BundleFile.StorageBlock
+        {
+            compressedSize = blockLength,
+            uncompressedSize = blockLength,
+            flags = 0
+        })
+        .ToList();
+    using var source = new MemoryStream(data, writable: false);
+    using var reader = new EndianBinaryReader(
+        source,
+        EndianType.LittleEndian);
+    using var manager = new ContainerStorageManager(
+        new ContainerStorageOptions
+        {
+            MemoryThresholdBytes = data.Length + 1
+        });
+    using var store = manager.Create(data.Length, "pipeline.bundle");
+    var workerThreads = new HashSet<int>();
+
+    ContainerBlockPipeline.Process(
+        reader,
+        blocks,
+        store,
+        requestedWorkers: 4,
+        CancellationToken.None,
+        (
+            blockIndex,
+            block,
+            compressedBuffer,
+            compressedLength,
+            uncompressedBuffer,
+            uncompressedLength) =>
+        {
+            var compressed = compressedBuffer.AsSpan(0, compressedLength);
+            var uncompressed = uncompressedBuffer.AsSpan(
+                0,
+                uncompressedLength);
+            lock (workerThreads)
+            {
+                workerThreads.Add(Environment.CurrentManagedThreadId);
+            }
+            Thread.Sleep(2);
+            compressed.CopyTo(uncompressed);
+            return uncompressed.Length;
+        });
+    store.Seal();
+
+    using var slice = store.CreateSlice(0, data.Length);
+    var actual = new byte[data.Length];
+    slice.ReadExactly(actual);
+    Assert(
+        actual.AsSpan().SequenceEqual(data),
+        "Container block pipeline changed block order or bytes.");
+    Assert(
+        workerThreads.Count > 1,
+        "Container block pipeline did not use multiple decode workers.");
+
+    VerifySingleWorkerContainerPipeline(data, blocks);
+    VerifyContainerPipelineCancellation(data, blocks);
+    VerifyContainerPipelineFailureCleanup(data, blocks);
+}
+
+static void VerifySingleWorkerContainerPipeline(
+    byte[] data,
+    IReadOnlyList<BundleFile.StorageBlock> blocks)
+{
+    using var source = new MemoryStream(data, writable: false);
+    using var reader = new EndianBinaryReader(
+        source,
+        EndianType.LittleEndian);
+    using var manager = new ContainerStorageManager(
+        new ContainerStorageOptions
+        {
+            MemoryThresholdBytes = data.Length + 1
+        });
+    using var store = manager.Create(data.Length, "serial-pipeline.bundle");
+    var decoderThreads = new HashSet<int>();
+
+    ContainerBlockPipeline.Process(
+        reader,
+        blocks,
+        store,
+        requestedWorkers: 1,
+        CancellationToken.None,
+        (
+            blockIndex,
+            block,
+            compressedBuffer,
+            compressedLength,
+            uncompressedBuffer,
+            uncompressedLength) =>
+        {
+            decoderThreads.Add(Environment.CurrentManagedThreadId);
+            compressedBuffer.AsSpan(0, compressedLength)
+                .CopyTo(uncompressedBuffer.AsSpan(0, uncompressedLength));
+            return uncompressedLength;
+        });
+    store.Seal();
+
+    using var slice = store.CreateSlice(0, data.Length);
+    var actual = new byte[data.Length];
+    slice.ReadExactly(actual);
+    Assert(
+        actual.AsSpan().SequenceEqual(data),
+        "Single-worker container pipeline changed bytes.");
+    Assert(
+        decoderThreads.Count == 1,
+        "Single-worker container pipeline used multiple decoder threads.");
+}
+
+static void VerifyContainerPipelineCancellation(
+    byte[] data,
+    IReadOnlyList<BundleFile.StorageBlock> blocks)
+{
+    using var source = new MemoryStream(data, writable: false);
+    using var reader = new EndianBinaryReader(
+        source,
+        EndianType.LittleEndian);
+    using var manager = new ContainerStorageManager(
+        new ContainerStorageOptions
+        {
+            MemoryThresholdBytes = data.Length + 1
+        });
+    using var store = manager.Create(
+        data.Length,
+        "cancelled-pipeline.bundle");
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+
+    AssertThrows<OperationCanceledException>(
+        () => ContainerBlockPipeline.Process(
+            reader,
+            blocks,
+            store,
+            requestedWorkers: 4,
+            cancellation.Token,
+            (
+                blockIndex,
+                block,
+                compressedBuffer,
+                compressedLength,
+                uncompressedBuffer,
+                uncompressedLength) => uncompressedLength));
+    Assert(
+        store.Length == 0,
+        "Pre-cancelled container pipeline modified its destination.");
+}
+
+static void VerifyContainerPipelineFailureCleanup(
+    byte[] data,
+    IReadOnlyList<BundleFile.StorageBlock> blocks)
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        "animestudio-container-pipeline-failure-"
+        + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        using var source = new MemoryStream(data, writable: false);
+        using var reader = new EndianBinaryReader(
+            source,
+            EndianType.LittleEndian);
+        using (var manager = new ContainerStorageManager(
+            new ContainerStorageOptions
+            {
+                MemoryThresholdBytes = 1,
+                TemporaryDirectory = root
+            }))
+        using (var store = manager.Create(
+            data.Length,
+            "failed-pipeline.bundle"))
+        {
+            AssertThrows<InvalidDataException>(
+                () => ContainerBlockPipeline.Process(
+                    reader,
+                    blocks,
+                    store,
+                    requestedWorkers: 4,
+                    CancellationToken.None,
+                    (
+                        blockIndex,
+                        block,
+                        compressedBuffer,
+                        compressedLength,
+                        uncompressedBuffer,
+                        uncompressedLength) =>
+                    {
+                        if (blockIndex == 5)
+                        {
+                            throw new InvalidDataException(
+                                "Synthetic decoder failure.");
+                        }
+
+                        compressedBuffer.AsSpan(0, compressedLength)
+                            .CopyTo(
+                                uncompressedBuffer.AsSpan(
+                                    0,
+                                    uncompressedLength));
+                        return uncompressedLength;
+                    }));
+        }
+
+        Assert(
+            !Directory.EnumerateFiles(
+                root,
+                "*",
+                SearchOption.AllDirectories).Any(),
+            "Failed container pipeline left temporary files behind.");
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
     }
 }
 

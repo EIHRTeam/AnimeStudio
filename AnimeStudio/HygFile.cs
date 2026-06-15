@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace AnimeStudio
@@ -14,18 +15,48 @@ namespace AnimeStudio
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
         private readonly ContainerStorageManager storageManager;
+        private readonly int workerCount;
+        private readonly CancellationToken cancellationToken;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
         public HygFile(FileReader reader, string path)
-            : this(reader, path, new ContainerStorageManager(new ContainerStorageOptions()), true)
+            : this(
+                reader,
+                path,
+                new ContainerStorageManager(new ContainerStorageOptions()),
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                true)
         {
         }
 
         internal HygFile(FileReader reader, string path, ContainerStorageManager storageManager)
-            : this(reader, path, storageManager, false)
+            : this(
+                reader,
+                path,
+                storageManager,
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                false)
+        {
+        }
+
+        internal HygFile(
+            FileReader reader,
+            string path,
+            ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken)
+            : this(
+                reader,
+                path,
+                storageManager,
+                workerCount,
+                cancellationToken,
+                false)
         {
         }
 
@@ -33,9 +64,13 @@ namespace AnimeStudio
             FileReader reader,
             string path,
             ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken,
             bool ownsStorageManager)
         {
             this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            this.workerCount = Math.Max(1, workerCount);
+            this.cancellationToken = cancellationToken;
             try
             {
                 Offset = reader.Position;
@@ -170,67 +205,66 @@ namespace AnimeStudio
             return storageManager.Create(uncompressedSizeSum, path);
         }
 
-        private void ReadBlocks(FileReader reader, Stream blocksStream)
+        private void ReadBlocks(
+            FileReader reader,
+            SharedBackingStore blocksStream)
         {
-            foreach (var blockInfo in m_BlocksInfo)
-            {
-                var compressionType = (CompressionType)(blockInfo.flags); // no mask
-                Logger.Verbose($"Block compression type {compressionType}");
-
-                switch (compressionType)
+            ContainerBlockPipeline.Process(
+                reader,
+                m_BlocksInfo,
+                blocksStream,
+                workerCount,
+                cancellationToken,
+                (
+                    blockIndex,
+                    blockInfo,
+                    compressedBuffer,
+                    compressedLength,
+                    uncompressedBuffer,
+                    uncompressedLength) =>
                 {
-                    case CompressionType.None: //None
-                        {
-                            var size = (int)blockInfo.uncompressedSize;
-                            var buffer = reader.ReadBytes(size);
-                            blocksStream.Write(buffer);
-                            break;
-                        }
-                    case CompressionType.Lz4Mr0k: // uses this flag despite not being that
-                    case CompressionType.Lz4: //LZ4
-                    case CompressionType.Lz4HC: //LZ4HC
-                        {
-                            var compressedSize = (int)blockInfo.compressedSize;
-                            var uncompressedSize = (int)blockInfo.uncompressedSize;
-
-                            var compressedBytes = ArrayPool<byte>.Shared.Rent(compressedSize);
-                            var uncompressedBytes = ArrayPool<byte>.Shared.Rent(uncompressedSize);
-
-                            var compressedBytesSpan = compressedBytes.AsSpan(0, compressedSize);
-                            var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, uncompressedSize);
-
-                            try
+                    var compressed = compressedBuffer.AsSpan(
+                        0,
+                        compressedLength);
+                    var uncompressed = uncompressedBuffer.AsSpan(
+                        0,
+                        uncompressedLength);
+                    var compressionType =
+                        (CompressionType)blockInfo.flags;
+                    Logger.Verbose(
+                        $"Block {blockIndex} compression type " +
+                        $"{compressionType}");
+                    switch (compressionType)
+                    {
+                        case CompressionType.None:
+                            if (compressedLength != uncompressedLength)
                             {
-                                reader.Read(compressedBytesSpan);
-                                
-                                // only flag=5 blocks are encrypted
-                                if ((int)blockInfo.flags == 5)
-                                {
-                                    HygUtils.Decrypt(compressedBytesSpan, (ulong)compressedSize, (ulong)uncompressedSize);
-                                }
-
-                                var numWrite = LZ4.Instance.Decompress(compressedBytesSpan, uncompressedBytesSpan);
-                                if (numWrite != uncompressedSize)
-                                {
-                                    Logger.Warning($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                                }
+                                throw new InvalidDataException(
+                                    $"Uncompressed HYG block {blockIndex} " +
+                                    $"contains {compressedLength} bytes; " +
+                                    $"expected {uncompressedLength} bytes.");
                             }
-                            catch (Exception e) when (e is not OutOfMemoryException)
+                            compressed.CopyTo(uncompressed);
+                            return uncompressedLength;
+                        case CompressionType.Lz4Mr0k:
+                        case CompressionType.Lz4:
+                        case CompressionType.Lz4HC:
+                            if ((int)blockInfo.flags == 5)
                             {
-                                Logger.Error($"Lz4 decompression error {e.Message}");
+                                HygUtils.Decrypt(
+                                    compressed,
+                                    (ulong)compressedLength,
+                                    (ulong)uncompressedLength);
                             }
-                            finally
-                            {
-                                blocksStream.Write(uncompressedBytesSpan);
-                                ArrayPool<byte>.Shared.Return(compressedBytes, true);
-                                ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
-                            }
-                            break;
-                        }
-                    default:
-                        throw new IOException($"Unsupported compression type {compressionType}");
-                }
-            }
+                            return LZ4.Instance.Decompress(
+                                compressed,
+                                uncompressed);
+                        default:
+                            throw new InvalidDataException(
+                                $"Unsupported HYG block compression type " +
+                                $"{compressionType}.");
+                    }
+                });
         }
 
         private void ReadFiles(SharedBackingStore blocksStream)

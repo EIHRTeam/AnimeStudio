@@ -76,9 +76,18 @@ preserving existing schemas, filter order, and output compatibility.
 - Export non-FBX assets with bounded workers. Reserve primary output paths in
   original asset order so duplicate handling and deterministic outputs do not
   depend on scheduler order.
+- Decode independent VFS, UnityFS/ENCR, Mhy, BLB, and HYG container blocks
+  through one bounded producer/worker pipeline. Keep source reads ordered,
+  write decoded blocks to precomputed offsets, and cap aggregate queued plus
+  active scratch buffers at 256 MiB. Preserve explicit sequential fallback
+  for formats such as HNACB1 whose later blocks depend on earlier output.
 - Synchronize shared resource stream reads so seek/read operations cannot
   overlap. Keep FBX native export in an explicit serial critical section until
   the native library is proven reentrant.
+- Reuse the process-wide worker budget for later CPU-bound phases. New
+  streaming work must use isolated per-item state, bounded queues and memory,
+  cancellation propagation, deterministic merge/output order, and measured
+  Debian thread-level evidence before it is considered multi-core ready.
 - Keep Workstation GC after the Debian Server GC candidate exceeded the
   established AssetMap RSS gate. Retain concurrent GC, the existing heap hard
   limit, and retained VM policy.
@@ -100,6 +109,9 @@ preserving existing schemas, filter order, and output compatibility.
 - Smoke coverage proves worker option validation, deterministic output-path
   reservation, shared resource-reader correctness under concurrency, and
   multi-worker object parsing without duplicate or missing objects.
+- Smoke coverage proves multi-worker and single-worker container block
+  decoding, positioned-write ordering, cancellation, decoder-failure
+  propagation, and temporary-file cleanup.
 - Published runtime configuration keeps Server GC disabled while preserving
   concurrent GC, the 75 percent heap hard limit, and retained VM policy.
 - `git diff --check` and active-file legacy reference scans pass.

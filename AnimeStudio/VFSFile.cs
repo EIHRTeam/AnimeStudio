@@ -1,10 +1,8 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Threading;
 
 namespace AnimeStudio
 {
@@ -13,13 +11,22 @@ namespace AnimeStudio
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
         private readonly ContainerStorageManager storageManager;
+        private readonly int workerCount;
+        private readonly CancellationToken cancellationToken;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
         public VFSFile(FileReader reader, string path, GameType game)
-            : this(reader, path, game, new ContainerStorageManager(new ContainerStorageOptions()), true)
+            : this(
+                reader,
+                path,
+                game,
+                new ContainerStorageManager(new ContainerStorageOptions()),
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                true)
         {
         }
 
@@ -28,7 +35,32 @@ namespace AnimeStudio
             string path,
             GameType game,
             ContainerStorageManager storageManager)
-            : this(reader, path, game, storageManager, false)
+            : this(
+                reader,
+                path,
+                game,
+                storageManager,
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                false)
+        {
+        }
+
+        internal VFSFile(
+            FileReader reader,
+            string path,
+            GameType game,
+            ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken)
+            : this(
+                reader,
+                path,
+                game,
+                storageManager,
+                workerCount,
+                cancellationToken,
+                false)
         {
         }
 
@@ -37,9 +69,13 @@ namespace AnimeStudio
             string path,
             GameType game,
             ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken,
             bool ownsStorageManager)
         {
             this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            this.workerCount = Math.Max(1, workerCount);
+            this.cancellationToken = cancellationToken;
             try
             {
                 Offset = reader.Position;
@@ -152,59 +188,63 @@ namespace AnimeStudio
             return storageManager.Create(uncompressedSizeSum, path);
         }
 
-        private void ReadBlocks(FileReader reader, Stream blocksStream, GameType game)
+        private void ReadBlocks(
+            FileReader reader,
+            SharedBackingStore blocksStream,
+            GameType game)
         {
-            foreach (var blockInfo in m_BlocksInfo)
-            {
-                var compressionType = (int)blockInfo.flags; // no mask
-                Logger.Verbose($"Block compression type {compressionType}");
-
-                switch (compressionType)
+            ContainerBlockPipeline.Process(
+                reader,
+                m_BlocksInfo,
+                blocksStream,
+                workerCount,
+                cancellationToken,
+                (
+                    blockIndex,
+                    blockInfo,
+                    compressedBuffer,
+                    compressedLength,
+                    uncompressedBuffer,
+                    uncompressedLength) =>
                 {
-                    case 0:
-                        var size = (int)blockInfo.uncompressedSize;
-                        var buffer = reader.ReadBytes(size);
-                        blocksStream.Write(buffer);
-                        break;
-                    case 5:
-                        var compressedSize = (int)blockInfo.compressedSize;
-                        var uncompressedSize = (int)blockInfo.uncompressedSize;
-
-                        var compressedBytes = ArrayPool<byte>.Shared.Rent(compressedSize);
-                        var uncompressedBytes = ArrayPool<byte>.Shared.Rent(uncompressedSize);
-
-                        var compressedBytesSpan = compressedBytes.AsSpan(0, compressedSize);
-                        var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, uncompressedSize);
-
-                        try
+                    var compressed = compressedBuffer.AsSpan(
+                        0,
+                        compressedLength);
+                    var uncompressed = uncompressedBuffer.AsSpan(
+                        0,
+                        uncompressedLength);
+                    var compressionType = (int)blockInfo.flags;
+                    Logger.Verbose(
+                        $"Block {blockIndex} compression type " +
+                        $"{compressionType}");
+                    switch (compressionType)
+                    {
+                        case 0:
                         {
-                            reader.Read(compressedBytesSpan);
-
-                            VFSUtils.DecryptBlock(compressedBytesSpan, game);
-
-                            // LZ4Inv this time
-                            var numWrite = LZ4Inv.Instance.Decompress(compressedBytesSpan, uncompressedBytesSpan);
-                            if (numWrite != uncompressedSize)
+                            if (compressed.Length != uncompressed.Length)
                             {
-                                Logger.Warning($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
+                                throw new InvalidDataException(
+                                    $"Uncompressed VFS block {blockIndex} " +
+                                    $"contains {compressed.Length} bytes; " +
+                                    $"expected {uncompressed.Length} bytes.");
                             }
-                        }
-                        catch (Exception e) when (e is not OutOfMemoryException)
-                        {
-                            Logger.Error($"Lz4 decompression error : {e.Message}");
-                        }
-                        finally
-                        {
-                            blocksStream.Write(uncompressedBytesSpan);
-                            ArrayPool<byte>.Shared.Return(compressedBytes, true);
-                            ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
-                        }
 
-                        break;
-                    default:
-                        throw new Exception($"Unsupported block compression type {compressionType}");
-                }
-            }
+                            compressed.CopyTo(uncompressed);
+                            return uncompressed.Length;
+                        }
+                        case 5:
+                        {
+                            VFSUtils.DecryptBlock(compressed, game);
+                            return LZ4Inv.Instance.Decompress(
+                                compressed,
+                                uncompressed);
+                        }
+                        default:
+                            throw new InvalidDataException(
+                                $"Unsupported VFS block compression type " +
+                                $"{compressionType}.");
+                    }
+                });
         }
 
         private void ReadFiles(SharedBackingStore blocksStream)

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace AnimeStudio
 {
@@ -14,18 +15,48 @@ namespace AnimeStudio
         private List<BundleFile.Node> m_DirectoryInfo;
         private byte[] Header;
         private readonly ContainerStorageManager storageManager;
+        private readonly int workerCount;
+        private readonly CancellationToken cancellationToken;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
         public Blb3File(FileReader reader, string path)
-            : this(reader, path, new ContainerStorageManager(new ContainerStorageOptions()), true)
+            : this(
+                reader,
+                path,
+                new ContainerStorageManager(new ContainerStorageOptions()),
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                true)
         {
         }
 
         internal Blb3File(FileReader reader, string path, ContainerStorageManager storageManager)
-            : this(reader, path, storageManager, false)
+            : this(
+                reader,
+                path,
+                storageManager,
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                false)
+        {
+        }
+
+        internal Blb3File(
+            FileReader reader,
+            string path,
+            ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken)
+            : this(
+                reader,
+                path,
+                storageManager,
+                workerCount,
+                cancellationToken,
+                false)
         {
         }
 
@@ -33,9 +64,13 @@ namespace AnimeStudio
             FileReader reader,
             string path,
             ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken,
             bool ownsStorageManager)
         {
             this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            this.workerCount = Math.Max(1, workerCount);
+            this.cancellationToken = cancellationToken;
             try
             {
                 BlbUtils.InitKeys(CryptoHelper.Blb3RC4Key, CryptoHelper.Blb3SBox, CryptoHelper.Blb3ShiftRow, CryptoHelper.Blb3Key, CryptoHelper.Blb3Mul);
@@ -164,99 +199,91 @@ namespace AnimeStudio
             return storageManager.Create(uncompressedSizeSum, path);
         }
 
-        private void ReadBlocks(FileReader reader, Stream blocksStream)
+        private void ReadBlocks(
+            FileReader reader,
+            SharedBackingStore blocksStream)
         {
-            foreach (var blockInfo in m_BlocksInfo)
-            {
-                var compressionType = (CompressionType)(blockInfo.flags & StorageBlockFlags.CompressionTypeMask);
-                Logger.Verbose($"Block compression type {compressionType}");
-                switch (compressionType) //kStorageBlockCompressionTypeMask
+            ContainerBlockPipeline.Process(
+                reader,
+                m_BlocksInfo,
+                blocksStream,
+                workerCount,
+                cancellationToken,
+                (
+                    blockIndex,
+                    blockInfo,
+                    compressedBuffer,
+                    compressedLength,
+                    uncompressedBuffer,
+                    uncompressedLength) =>
                 {
-                    case CompressionType.None: //None
-                        {
-                            var size = (int)blockInfo.uncompressedSize;
-                            var buffer = reader.ReadBytes(size);
-                            BlbUtils.Decrypt(Header, buffer);
-                            blocksStream.Write(buffer);
-                            break;
-                        }
-                    case CompressionType.Oodle: //Oodle
-                        {
-                            var compressedSize = (int)blockInfo.compressedSize;
-                            var uncompressedSize = (int)blockInfo.uncompressedSize;
-
-                            var compressedBytes = ArrayPool<byte>.Shared.Rent(compressedSize);
-                            var uncompressedBytes = ArrayPool<byte>.Shared.Rent(uncompressedSize);
-
-                            var compressedBytesSpan = compressedBytes.AsSpan(0, compressedSize);
-                            var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, uncompressedSize);
-
-                            try
+                    var compressed = compressedBuffer.AsSpan(
+                        0,
+                        compressedLength);
+                    var uncompressed = uncompressedBuffer.AsSpan(
+                        0,
+                        uncompressedLength);
+                    var compressionType = (CompressionType)(
+                        blockInfo.flags
+                        & StorageBlockFlags.CompressionTypeMask);
+                    Logger.Verbose(
+                        $"Block {blockIndex} compression type " +
+                        $"{compressionType}");
+                    switch (compressionType)
+                    {
+                        case CompressionType.None:
+                            if (compressedLength != uncompressedLength)
                             {
-
-                                reader.Read(compressedBytesSpan);
-                                
-                                if (compressedSize > 6)
-                                    BlbUtils.Decrypt(Header, compressedBytesSpan);
-
-                                var numWrite = OodleHelper.Decompress(compressedBytesSpan, uncompressedBytesSpan);
-                                if (numWrite != uncompressedSize)
-                                {
-                                    Logger.Warning($"Oodle decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                                }
+                                throw new InvalidDataException(
+                                    $"Uncompressed BLB block {blockIndex} " +
+                                    $"contains {compressedLength} bytes; " +
+                                    $"expected {uncompressedLength} bytes.");
                             }
-                            finally
+                            BlbUtils.Decrypt(Header, compressed);
+                            compressed.CopyTo(uncompressed);
+                            return uncompressedLength;
+                        case CompressionType.Oodle:
+                            if (compressedLength > 6)
                             {
-                                blocksStream.Write(uncompressedBytesSpan);
-                                ArrayPool<byte>.Shared.Return(compressedBytes, true);
-                                ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
+                                BlbUtils.Decrypt(Header, compressed);
                             }
-                            break;
-                        }
-                    case CompressionType.Lzma: //LZMA
-                        {
-                            SevenZipHelper.StreamDecompress(reader.BaseStream, blocksStream, blockInfo.compressedSize, blockInfo.uncompressedSize);
-                            break;
-                        }
-                    case CompressionType.Lz4: //LZ4
-                    case CompressionType.Lz4HC: //LZ4HC
-                        {
-                            var compressedSize = (int)blockInfo.compressedSize;
-                            var uncompressedSize = (int)blockInfo.uncompressedSize;
-
-                            var compressedBytes = ArrayPool<byte>.Shared.Rent(compressedSize);
-                            var uncompressedBytes = ArrayPool<byte>.Shared.Rent(uncompressedSize);
-
-                            var compressedBytesSpan = compressedBytes.AsSpan(0, compressedSize);
-                            var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, uncompressedSize);
-
-                            try
+                            return OodleHelper.Decompress(
+                                compressed,
+                                uncompressed);
+                        case CompressionType.Lzma:
+                            using (var input = new MemoryStream(
+                                compressedBuffer,
+                                0,
+                                compressedLength,
+                                writable: false,
+                                publiclyVisible: true))
+                            using (var output = new MemoryStream(
+                                uncompressedBuffer,
+                                0,
+                                uncompressedLength,
+                                writable: true,
+                                publiclyVisible: true))
                             {
-
-                                reader.Read(compressedBytesSpan);
-                                BlbUtils.Decrypt(Header, compressedBytesSpan);
-                                var numWrite = LZ4.Instance.Decompress(compressedBytesSpan, uncompressedBytesSpan);
-                                if (numWrite != uncompressedSize)
-                                {
-                                    Logger.Warning($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                                }
+                                output.SetLength(0);
+                                SevenZipHelper.StreamDecompress(
+                                    input,
+                                    output,
+                                    compressedLength,
+                                    uncompressedLength);
+                                return checked((int)output.Position);
                             }
-                            catch (Exception e) when (e is not OutOfMemoryException)
-                            {
-                                Logger.Error($"Lz4 decompression error {e.Message}");
-                            }
-                            finally
-                            {
-                                blocksStream.Write(uncompressedBytesSpan);
-                                ArrayPool<byte>.Shared.Return(compressedBytes, true);
-                                ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
-                            }
-                            break;
-                        }
-                    default:
-                        throw new IOException($"Unsupported compression type {compressionType}");
-                }
-            }
+                        case CompressionType.Lz4:
+                        case CompressionType.Lz4HC:
+                            BlbUtils.Decrypt(Header, compressed);
+                            return LZ4.Instance.Decompress(
+                                compressed,
+                                uncompressed);
+                        default:
+                            throw new InvalidDataException(
+                                $"Unsupported BLB block compression type " +
+                                $"{compressionType}.");
+                    }
+                });
         }
 
         private void ReadFiles(SharedBackingStore blocksStream)

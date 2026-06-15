@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Security.Cryptography;
+using System.Threading;
 using static AnimeStudio.CryptoHelper;
 
 namespace AnimeStudio
@@ -15,6 +16,8 @@ namespace AnimeStudio
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
         private readonly ContainerStorageManager storageManager;
+        private readonly int workerCount;
+        private readonly CancellationToken cancellationToken;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
@@ -56,12 +59,40 @@ namespace AnimeStudio
         public long TotalSize => 8 + m_Header.compressedBlocksInfoSize + m_BlocksInfo.Sum((BundleFile.StorageBlock x) => x.compressedSize);
 
         public MhyFile(FileReader reader, Mhy mhy)
-            : this(reader, mhy, new ContainerStorageManager(new ContainerStorageOptions()), true)
+            : this(
+                reader,
+                mhy,
+                new ContainerStorageManager(new ContainerStorageOptions()),
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                true)
         {
         }
 
         internal MhyFile(FileReader reader, Mhy mhy, ContainerStorageManager storageManager)
-            : this(reader, mhy, storageManager, false)
+            : this(
+                reader,
+                mhy,
+                storageManager,
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                false)
+        {
+        }
+
+        internal MhyFile(
+            FileReader reader,
+            Mhy mhy,
+            ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken)
+            : this(
+                reader,
+                mhy,
+                storageManager,
+                workerCount,
+                cancellationToken,
+                false)
         {
         }
 
@@ -69,9 +100,13 @@ namespace AnimeStudio
             FileReader reader,
             Mhy mhy,
             ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken,
             bool ownsStorageManager)
         {
             this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            this.workerCount = Math.Max(1, workerCount);
+            this.cancellationToken = cancellationToken;
             try
             {
                 this.mhy = mhy;
@@ -191,53 +226,56 @@ namespace AnimeStudio
             return storageManager.Create(uncompressedSizeSum, path);
         }
 
-        private void ReadBlocks(EndianBinaryReader reader, Stream blocksStream)
+        private void ReadBlocks(
+            EndianBinaryReader reader,
+            SharedBackingStore blocksStream)
         {
-            foreach (var blockInfo in m_BlocksInfo)
-            {
-                var compressedSize = (int)blockInfo.compressedSize;
-                var uncompressedSize = (int)blockInfo.uncompressedSize;
-                if (compressedSize < 0x10)
+            ContainerBlockPipeline.Process(
+                reader,
+                m_BlocksInfo,
+                blocksStream,
+                workerCount,
+                cancellationToken,
+                (
+                    blockIndex,
+                    blockInfo,
+                    compressedBuffer,
+                    compressedLength,
+                    uncompressedBuffer,
+                    uncompressedLength) =>
                 {
-                    throw new Exception($"Wrong compressed length: {compressedSize}");
-                }
+                    var compressed = compressedBuffer.AsSpan(
+                        0,
+                        compressedLength);
+                    var uncompressed = uncompressedBuffer.AsSpan(
+                        0,
+                        uncompressedLength);
+                    if (compressed.Length < 0x10)
+                    {
+                        throw new InvalidDataException(
+                            $"Mhy block {blockIndex} has invalid compressed " +
+                            $"length {compressed.Length}.");
+                    }
 
-                var compressedBytes = ArrayPool<byte>.Shared.Rent(compressedSize);
-                var uncompressedBytes = ArrayPool<byte>.Shared.Rent(uncompressedSize);
-                reader.Read(compressedBytes, 0, compressedSize);
-                try
-                {
-                    var compressedBytesSpan = compressedBytes.AsSpan(0, compressedSize);
-                    var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, uncompressedSize);
-                    
                     int offset = 0;
                     if (signature == "mhy0")
                     {
-                        DescrambleEntry(compressedBytesSpan);
+                        DescrambleEntry(compressed);
                         offset = 12;
                     }
                     else
                     {
-                        DescrambleEntry2(compressedBytesSpan);
+                        DescrambleEntry2(compressed);
                         offset = 28;
                     }
 
-                    Logger.Verbose($"Descrambled block signature {Convert.ToHexString(compressedBytes, 0, 4)}");
-                    int num = offset;
-                    int numWrite = Decompress(compressedBytesSpan.Slice(num, compressedBytesSpan.Length - num), uncompressedBytesSpan);
-                    if (numWrite != uncompressedSize)
-                    {
-                        throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                    }
-
-                    blocksStream.Write(uncompressedBytesSpan);
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(compressedBytes, true);
-                    ArrayPool<byte>.Shared.Return(uncompressedBytes, true);
-                }
-            }
+                    Logger.Verbose(
+                        $"Descrambled block signature " +
+                        $"{Convert.ToHexString(compressed[..4])}");
+                    return Decompress(
+                        compressed[offset..],
+                        uncompressed);
+                });
         }
         private int Decompress(Span<byte> compressed, Span<byte> decompressed)
         {

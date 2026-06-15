@@ -586,19 +586,45 @@ namespace AnimeStudio
                 {
                     case FileType.ENCRFile:
                     case FileType.BundleFile:
-                        file = new BundleFile(reader, Game, GetContainerStorageManager());
+                        file = new BundleFile(
+                            reader,
+                            Game,
+                            GetContainerStorageManager(),
+                            WorkerCount,
+                            tokenSource.Token);
                         break;
                     case FileType.Blb3File:
-                        file = new Blb3File(reader, reader.FullPath, GetContainerStorageManager());
+                        file = new Blb3File(
+                            reader,
+                            reader.FullPath,
+                            GetContainerStorageManager(),
+                            WorkerCount,
+                            tokenSource.Token);
                         break;
                     case FileType.MhyFile:
-                        file = new MhyFile(reader, (Mhy)Game, GetContainerStorageManager());
+                        file = new MhyFile(
+                            reader,
+                            (Mhy)Game,
+                            GetContainerStorageManager(),
+                            WorkerCount,
+                            tokenSource.Token);
                         break;
                     case FileType.HygFile:
-                        file = new HygFile(reader, reader.FullPath, GetContainerStorageManager());
+                        file = new HygFile(
+                            reader,
+                            reader.FullPath,
+                            GetContainerStorageManager(),
+                            WorkerCount,
+                            tokenSource.Token);
                         break;
                     case FileType.VFSFile:
-                        file = new VFSFile(reader, reader.FullPath, Game.Type, GetContainerStorageManager());
+                        file = new VFSFile(
+                            reader,
+                            reader.FullPath,
+                            Game.Type,
+                            GetContainerStorageManager(),
+                            WorkerCount,
+                            tokenSource.Token);
                         break;
                 }
 

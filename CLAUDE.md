@@ -52,6 +52,16 @@ seek/read operations, while FBX native export remains serialized until the
 native wrapper is proven reentrant. Keep Workstation GC: the Debian Server GC
 candidate exceeded the Phase 2 AssetMap RSS gate.
 
+Independent container blocks use one bounded producer/worker pipeline for
+VFS, UnityFS/ENCR, Mhy, BLB, and HYG. Input bytes are read in source order,
+decode workers own their buffers, and decoded bytes are written to fixed
+backing-store offsets under a 256 MiB scratch budget. HNACB1 remains
+sequential because later blocks depend on the first block. Future CPU-heavy
+streaming or conversion work must reuse the process-wide worker budget,
+isolate mutable state, bound queued memory, preserve deterministic output
+order, propagate cancellation, and demonstrate concurrent named workers on
+Debian before acceptance.
+
 Every implementation session records its work in `STATUS.md`. `PLAN.md`
 contains only the current phase details, while `ROADMAP.md` owns long-term and
 cross-phase constraints. Keep these documents synchronized when scope,

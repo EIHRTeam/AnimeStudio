@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Buffers;
+using System.Threading;
 
 namespace AnimeStudio
 {
@@ -112,6 +113,9 @@ namespace AnimeStudio
         private Game Game;
         private UnityCN UnityCN;
         private readonly ContainerStorageManager storageManager;
+        private readonly int workerCount;
+        private readonly CancellationToken cancellationToken;
+        private readonly string sourcePath;
 
         public Header m_Header;
         private List<Node> m_DirectoryInfo;
@@ -123,12 +127,40 @@ namespace AnimeStudio
         private bool HasBlockInfoNeedPaddingAtStart = true;
 
         public BundleFile(FileReader reader, Game game)
-            : this(reader, game, new ContainerStorageManager(new ContainerStorageOptions()), true)
+            : this(
+                reader,
+                game,
+                new ContainerStorageManager(new ContainerStorageOptions()),
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                true)
         {
         }
 
         internal BundleFile(FileReader reader, Game game, ContainerStorageManager storageManager)
-            : this(reader, game, storageManager, false)
+            : this(
+                reader,
+                game,
+                storageManager,
+                Math.Max(1, Environment.ProcessorCount),
+                CancellationToken.None,
+                false)
+        {
+        }
+
+        internal BundleFile(
+            FileReader reader,
+            Game game,
+            ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken)
+            : this(
+                reader,
+                game,
+                storageManager,
+                workerCount,
+                cancellationToken,
+                false)
         {
         }
 
@@ -136,9 +168,14 @@ namespace AnimeStudio
             FileReader reader,
             Game game,
             ContainerStorageManager storageManager,
+            int workerCount,
+            CancellationToken cancellationToken,
             bool ownsStorageManager)
         {
             this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            this.workerCount = Math.Max(1, workerCount);
+            this.cancellationToken = cancellationToken;
+            sourcePath = reader.FullPath;
             try
             {
                 Game = game;
@@ -529,7 +566,198 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadBlocks(FileReader reader, Stream blocksStream)
+        private void ReadBlocks(
+            FileReader reader,
+            SharedBackingStore blocksStream)
+        {
+            if (Game.Type.IsHNACB1())
+            {
+                ReadBlocksSequential(reader, blocksStream);
+                return;
+            }
+
+            ContainerBlockPipeline.Process(
+                reader,
+                m_BlocksInfo,
+                blocksStream,
+                workerCount,
+                cancellationToken,
+                DecodeBlock);
+        }
+
+        private int DecodeBlock(
+            int blockIndex,
+            StorageBlock blockInfo,
+            byte[] compressedBuffer,
+            int compressedLength,
+            byte[] uncompressedBuffer,
+            int uncompressedLength)
+        {
+            var compressed = compressedBuffer.AsSpan(
+                0,
+                compressedLength);
+            var uncompressed = uncompressedBuffer.AsSpan(
+                0,
+                uncompressedLength);
+            var compressionType = (CompressionType)(
+                blockInfo.flags & StorageBlockFlags.CompressionTypeMask);
+            Logger.Verbose(
+                $"Block {blockIndex} compression type {compressionType}");
+
+            switch (compressionType)
+            {
+                case CompressionType.None:
+                    if (compressedLength != uncompressedLength)
+                    {
+                        throw new InvalidDataException(
+                            $"Uncompressed bundle block {blockIndex} " +
+                            $"contains {compressedLength} bytes; expected " +
+                            $"{uncompressedLength} bytes.");
+                    }
+                    compressed.CopyTo(uncompressed);
+                    return uncompressedLength;
+                case CompressionType.Lzma:
+                    if (Game.Type.IsNetEase() && blockIndex == 0)
+                    {
+                        NetEaseUtils.DecryptWithoutHeader(compressed);
+                    }
+                    using (var input = new MemoryStream(
+                        compressedBuffer,
+                        0,
+                        compressedLength,
+                        writable: false,
+                        publiclyVisible: true))
+                    using (var output = new MemoryStream(
+                        uncompressedBuffer,
+                        0,
+                        uncompressedLength,
+                        writable: true,
+                        publiclyVisible: true))
+                    {
+                        output.SetLength(0);
+                        SevenZipHelper.StreamDecompress(
+                            input,
+                            output,
+                            compressedLength,
+                            uncompressedLength);
+                        return checked((int)output.Position);
+                    }
+                case CompressionType.OodleHSR:
+                case CompressionType.OodleMr0k:
+                    if (compressionType == CompressionType.OodleMr0k
+                        && Mr0kUtils.IsMr0k(compressed))
+                    {
+                        compressed = Mr0kUtils.Decrypt(
+                            compressed,
+                            (Mr0k)Game);
+                    }
+                    return OodleHelper.Decompress(
+                        compressed,
+                        uncompressed);
+                case CompressionType.Lz4:
+                case CompressionType.Lz4HC:
+                case CompressionType.Lz4Mr0k
+                    when Game.Type.IsMhyGroup():
+                    if (compressionType == CompressionType.Lz4Mr0k
+                        && Mr0kUtils.IsMr0k(compressed))
+                    {
+                        compressed = Mr0kUtils.Decrypt(
+                            compressed,
+                            (Mr0k)Game);
+                    }
+                    if (Game.IsUnityCN()
+                        && ((int)blockInfo.flags & 0x100) != 0)
+                    {
+                        UnityCN.DecryptBlock(
+                            compressed,
+                            compressed.Length,
+                            blockIndex);
+                    }
+                    if (Game.Type.IsAzurPromiliaCBT2()
+                        && ((int)blockInfo.flags & 0x100) != 0)
+                    {
+                        UnityCN.DecryptBlock(
+                            compressed,
+                            compressed.Length,
+                            blockIndex);
+                    }
+                    if (Game.Type.IsNetEase() && blockIndex == 0)
+                    {
+                        NetEaseUtils.DecryptWithHeader(compressed);
+                    }
+                    if ((Game.Type.IsArknightsEndfieldCB1()
+                            || Game.Type.IsArknightsEndfieldCB2())
+                        && blockIndex == 0
+                        && compressed.Length >= 32
+                        && compressed[..32].Count((byte)0xa6) > 5)
+                    {
+                        FairGuardUtils.Decrypt(compressed, Game.Type);
+                    }
+                    if (Game.Type.IsOPFP())
+                    {
+                        OPFPUtils.Decrypt(
+                            compressed,
+                            sourcePath);
+                    }
+                    return LZ4.Instance.Decompress(
+                        compressed,
+                        uncompressed);
+                case CompressionType.Lz4Inv
+                    when Game.Type.IsArknightsEndfieldCB2():
+                    if (blockIndex == 0
+                        && compressed.Length >= 32
+                        && compressed[..32].Count((byte)0xa6) > 5)
+                    {
+                        FairGuardUtils.Decrypt(compressed, Game.Type);
+                    }
+                    return LZ4Inv.Instance.Decompress(
+                        compressed,
+                        uncompressed);
+                case CompressionType.Lz4Inv
+                    when Game.Type.IsArknightsEndfieldCB1():
+                    if (blockIndex == 0
+                        && compressed.Length >= 32
+                        && compressed[..32].Count((byte)0xa6) > 5)
+                    {
+                        FairGuardUtils.Decrypt(compressed, Game.Type);
+                    }
+                    return LZ4Ak.Instance.Decompress(
+                        compressed,
+                        uncompressed);
+                case CompressionType.Lz4Lit4
+                    or CompressionType.Lz4Lit5
+                    when Game.Type.IsExAstris():
+                    return LZ4Lit.Instance.Decompress(
+                        compressed,
+                        uncompressed);
+                case CompressionType.Zstd
+                    when !Game.Type.IsMhyGroup():
+                    using (var decompressor = new Decompressor())
+                    {
+                        return decompressor.Unwrap(
+                            compressedBuffer,
+                            0,
+                            compressedLength,
+                            uncompressedBuffer,
+                            0,
+                            uncompressedLength);
+                    }
+                case CompressionType.Lz4Lit4
+                    or CompressionType.Lz4Lit5
+                    when Game.Type.IsArknights():
+                    return LZ4Ak.Instance.Decompress(
+                        compressed,
+                        uncompressed);
+                default:
+                    throw new InvalidDataException(
+                        $"Unsupported bundle compression type " +
+                        $"{compressionType}.");
+            }
+        }
+
+        private void ReadBlocksSequential(
+            FileReader reader,
+            Stream blocksStream)
         {
             Logger.Verbose($"Writing block to blocks stream...");
 
