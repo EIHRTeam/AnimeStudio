@@ -68,11 +68,17 @@ namespace AnimeStudio
 
         public Dictionary<string, List<long>> OffsetData = new();
         private int clearCount;
+        private readonly object containerStorageManagerSync = new();
+        private readonly object versionSync = new();
         private ContainerStorageManager containerStorageManager;
 
         private ContainerStorageManager GetContainerStorageManager()
         {
-            return containerStorageManager ??= new ContainerStorageManager(ContainerStorageOptions);
+            lock (containerStorageManagerSync)
+            {
+                return containerStorageManager ??=
+                    new ContainerStorageManager(ContainerStorageOptions);
+            }
         }
 
         internal BinaryReader GetOrAddResourceFileReader(
@@ -512,13 +518,41 @@ namespace AnimeStudio
                 reader.Dispose();
             }
         }
+        private const long ConcurrentBlockFileReadBudgetBytes =
+            512L * 1024 * 1024;
+
+        private sealed record PendingResource(
+            string Key,
+            FileReader Reader);
+
+        private sealed class GameBlockLoadResult : IDisposable
+        {
+            internal List<SerializedFile> Assets { get; } = new();
+
+            internal List<PendingResource> Resources { get; } = new();
+
+            public void Dispose()
+            {
+                foreach (var asset in Assets)
+                {
+                    asset.reader.Dispose();
+                }
+                Assets.Clear();
+
+                foreach (var resource in Resources)
+                {
+                    resource.Reader.Dispose();
+                }
+                Resources.Clear();
+            }
+        }
+
         private void LoadBlockFile(FileReader reader)
         {
             Logger.Info("Loading " + reader.FullPath);
             try
             {
                 dynamic stream;
-
                 switch (reader.FileType)
                 {
                     case FileType.BlkFile:
@@ -533,55 +567,219 @@ namespace AnimeStudio
                 using (stream)
                 {
                     var total = stream.Length;
-
-                    OffsetData.TryGetValue(reader.FileName, out var manualOffsets);
-                    bool isManualOffsets = (manualOffsets != null && manualOffsets.Count > 0) && Game.Type.IsArknightsEndfieldGroup();
-                    IEnumerable<long> offsetsEnumerable = isManualOffsets
+                    OffsetData.TryGetValue(
+                        reader.FileName,
+                        out var manualOffsets);
+                    var isManualOffsets =
+                        manualOffsets != null
+                        && manualOffsets.Count > 0
+                        && Game.Type.IsArknightsEndfieldGroup();
+                    var requestedOffsets = isManualOffsets
                         ? manualOffsets
-                        : stream.GetOffsets(reader.FullPath);
+                        : null;
 
-                    int idx = 0;
-                    int? manualTotal = (manualOffsets != null && manualOffsets.Count > 0) ? manualOffsets.Count : (int?)null;
-                    foreach (var offset in offsetsEnumerable)
+                    if (reader.FileType != FileType.BlkFile
+                        && BlockFileRangeDiscovery.TryDiscover(
+                            reader,
+                            Game,
+                            requestedOffsets,
+                            out var ranges))
                     {
-                        var name = offset.ToString("X8");
-                        Logger.Verbose($"Loading Block {name}");
-
-                        var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), name);
-                        var subReader = new FileReader(dummyPath, stream, true);
-                        if (isManualOffsets)
-                            subReader.Position = offset;
-                        LoadGameBlockFile(subReader, reader.FullPath, offset, false);
-
-                        if (manualTotal.HasValue)
-                            Progress.Report(idx + 1, manualTotal.Value);
-                        else
-                            Progress.Report((int)offset, (int)total);
-                        idx++;
+                        LoadBlockFileRanges(
+                            reader,
+                            ranges,
+                            total);
+                    }
+                    else
+                    {
+                        LoadBlockFileSequential(
+                            reader,
+                            stream,
+                            total,
+                            manualOffsets,
+                            isManualOffsets);
                     }
                 }
-                
             }
-            catch (Exception e) when (e is not OutOfMemoryException)
+            catch (Exception exception)
+                when (exception is not OutOfMemoryException)
             {
-                Logger.Error($"Error while reading block file {reader.FileName}", e);
+                Logger.Error(
+                    $"Error while reading block file {reader.FileName}",
+                    exception);
             }
             finally
             {
                 reader.Dispose();
             }
         }
-        private void LoadGameBlockFile(FileReader reader, string originalPath = null, long originalOffset = 0, bool log = true)
+
+        private void LoadBlockFileRanges(
+            FileReader sourceReader,
+            IReadOnlyList<BlockFileRange> ranges,
+            long total)
+        {
+            var rangeWorkerCount = GetBlockFileWorkerCount(
+                ranges,
+                WorkerCount);
+            var containerWorkerCount = rangeWorkerCount > 1
+                ? 1
+                : WorkerCount;
+            var results = new GameBlockLoadResult[ranges.Count];
+            try
+            {
+                BoundedParallel.For(
+                    0,
+                    ranges.Count,
+                    rangeWorkerCount,
+                    tokenSource.Token,
+                    index =>
+                    {
+                        var range = ranges[index];
+                        var name = range.Offset.ToString("X8");
+                        Logger.Verbose($"Loading Block {name}");
+                        var dummyPath = Path.Combine(
+                            Path.GetDirectoryName(sourceReader.FullPath)
+                                ?? string.Empty,
+                            name);
+                        using var stream = BlockFileRangeDiscovery.CreateView(
+                            sourceReader.BaseStream,
+                            range.Offset,
+                            range.Length);
+                        var subReader = new FileReader(
+                            dummyPath,
+                            stream);
+                        results[index] = ParseGameBlockFile(
+                            subReader,
+                            sourceReader.FullPath,
+                            range.Offset,
+                            log: false,
+                            containerWorkerCount);
+                    },
+                    threadNamePrefix: "AnimeStudio container");
+
+                for (var index = 0; index < results.Length; index++)
+                {
+                    MergeGameBlockResult(results[index]);
+                    results[index]?.Dispose();
+                    results[index] = null;
+                    Progress.Report(
+                        checked((int)Math.Min(
+                            ranges[index].Offset,
+                            int.MaxValue)),
+                        checked((int)Math.Min(total, int.MaxValue)));
+                }
+            }
+            finally
+            {
+                foreach (var result in results)
+                {
+                    result?.Dispose();
+                }
+            }
+        }
+
+        private void LoadBlockFileSequential(
+            FileReader sourceReader,
+            dynamic stream,
+            long total,
+            List<long> manualOffsets,
+            bool isManualOffsets)
+        {
+            IEnumerable<long> offsets = isManualOffsets
+                ? manualOffsets
+                : stream.GetOffsets(sourceReader.FullPath);
+            var index = 0;
+            int? manualTotal = manualOffsets != null
+                && manualOffsets.Count > 0
+                    ? manualOffsets.Count
+                    : null;
+            foreach (var offset in offsets)
+            {
+                var name = offset.ToString("X8");
+                Logger.Verbose($"Loading Block {name}");
+                var dummyPath = Path.Combine(
+                    Path.GetDirectoryName(sourceReader.FullPath)
+                        ?? string.Empty,
+                    name);
+                var subReader = new FileReader(
+                    dummyPath,
+                    stream,
+                    leaveOpen: true);
+                if (isManualOffsets)
+                {
+                    subReader.Position = offset;
+                }
+
+                LoadGameBlockFile(
+                    subReader,
+                    sourceReader.FullPath,
+                    offset,
+                    log: false);
+
+                if (manualTotal.HasValue)
+                {
+                    Progress.Report(index + 1, manualTotal.Value);
+                }
+                else
+                {
+                    Progress.Report(
+                        checked((int)Math.Min(offset, int.MaxValue)),
+                        checked((int)Math.Min(total, int.MaxValue)));
+                }
+                index++;
+            }
+        }
+
+        private static int GetBlockFileWorkerCount(
+            IReadOnlyList<BlockFileRange> ranges,
+            int requestedWorkers)
+        {
+            var maximumRangeLength = ranges.Max(
+                range => Math.Max(1L, range.Length));
+            var memoryLimitedWorkers = Math.Max(
+                1,
+                (int)Math.Min(
+                    int.MaxValue,
+                    ConcurrentBlockFileReadBudgetBytes
+                        / maximumRangeLength));
+            return Math.Min(
+                ranges.Count,
+                Math.Min(requestedWorkers, memoryLimitedWorkers));
+        }
+
+        private void LoadGameBlockFile(
+            FileReader reader,
+            string originalPath = null,
+            long originalOffset = 0,
+            bool log = true)
+        {
+            using var result = ParseGameBlockFile(
+                reader,
+                originalPath,
+                originalOffset,
+                log,
+                WorkerCount);
+            MergeGameBlockResult(result);
+        }
+
+        private GameBlockLoadResult ParseGameBlockFile(
+            FileReader reader,
+            string originalPath,
+            long originalOffset,
+            bool log,
+            int containerWorkerCount)
         {
             if (log)
             {
                 Logger.Info("Loading " + reader.FullPath);
             }
+
+            var result = new GameBlockLoadResult();
             List<StreamFile> innerFiles = null;
             try
             {
                 dynamic file = null;
-
                 switch (reader.FileType)
                 {
                     case FileType.ENCRFile:
@@ -590,7 +788,7 @@ namespace AnimeStudio
                             reader,
                             Game,
                             GetContainerStorageManager(),
-                            WorkerCount,
+                            containerWorkerCount,
                             tokenSource.Token);
                         break;
                     case FileType.Blb3File:
@@ -598,7 +796,7 @@ namespace AnimeStudio
                             reader,
                             reader.FullPath,
                             GetContainerStorageManager(),
-                            WorkerCount,
+                            containerWorkerCount,
                             tokenSource.Token);
                         break;
                     case FileType.MhyFile:
@@ -606,7 +804,7 @@ namespace AnimeStudio
                             reader,
                             (Mhy)Game,
                             GetContainerStorageManager(),
-                            WorkerCount,
+                            containerWorkerCount,
                             tokenSource.Token);
                         break;
                     case FileType.HygFile:
@@ -614,7 +812,7 @@ namespace AnimeStudio
                             reader,
                             reader.FullPath,
                             GetContainerStorageManager(),
-                            WorkerCount,
+                            containerWorkerCount,
                             tokenSource.Token);
                         break;
                     case FileType.VFSFile:
@@ -623,80 +821,56 @@ namespace AnimeStudio
                             reader.FullPath,
                             Game.Type,
                             GetContainerStorageManager(),
-                            WorkerCount,
+                            containerWorkerCount,
                             tokenSource.Token);
                         break;
                 }
 
                 if (file == null)
-                    throw new Exception("Unsupported game block file type");
+                {
+                    throw new InvalidDataException(
+                        "Unsupported game block file type.");
+                }
 
                 innerFiles = file.fileList;
-                Logger.Verbose($"file total size: {file.m_Header.size:X8}");
+                Logger.Verbose(
+                    $"file total size: {file.m_Header.size:X8}");
                 foreach (var innerFile in innerFiles)
                 {
-                    var stream = innerFile.stream;
-                    innerFile.stream = null;
-                    FileReader cabReader = null;
-                    try
-                    {
-                        var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
-                        cabReader = new FileReader(dummyPath, stream);
-                        stream = null;
-                        if (cabReader.FileType == FileType.AssetsFile)
-                        {
-                            LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
-                            cabReader = null;
-                        }
-                        else
-                        {
-                            Logger.Verbose("Caching resource stream");
-                            if (!TryAddResourceFileReader(innerFile.fileName, cabReader))
-                            {
-                                cabReader.Dispose();
-                            }
-                            cabReader = null;
-                        }
-                    }
-                    finally
-                    {
-                        cabReader?.Dispose();
-                        stream?.Dispose();
-                    }
+                    ParseGameBlockInnerFile(
+                        result,
+                        innerFile,
+                        reader.FullPath,
+                        originalPath,
+                        originalOffset,
+                        file.m_Header.unityRevision);
                 }
             }
             catch (InvalidCastException)
             {
-                string name = "";
-                switch (reader.FileType)
+                var expectedName = reader.FileType switch
                 {
-                    case FileType.ENCRFile:
-                    case FileType.BundleFile:
-                        name = nameof(Mr0k);
-                        break;
-                    case FileType.Blb3File:
-                        name = nameof(Blb3File);
-                        break;
-                    case FileType.MhyFile:
-                        name = nameof(Mhy);
-                        break;
-                    case FileType.HygFile:
-                        name = nameof(HygFile);
-                        break;
-                    case FileType.VFSFile:
-                        name = nameof(VFSFile);
-                        break;
-                }
-                Logger.Error($"Game type mismatch, Expected {name} but got {Game.Name} ({Game.GetType().Name}) !!");
+                    FileType.ENCRFile
+                        or FileType.BundleFile => nameof(Mr0k),
+                    FileType.Blb3File => nameof(Blb3File),
+                    FileType.MhyFile => nameof(Mhy),
+                    FileType.HygFile => nameof(HygFile),
+                    FileType.VFSFile => nameof(VFSFile),
+                    _ => "matching game"
+                };
+                Logger.Error(
+                    $"Game type mismatch, expected {expectedName} but got " +
+                    $"{Game.Name} ({Game.GetType().Name}) !!");
             }
-            catch (Exception e) when (e is not OutOfMemoryException)
+            catch (Exception exception)
+                when (exception is not OutOfMemoryException)
             {
-                var str = $"Error while reading file {reader.FullPath}";
+                var message = $"Error while reading file {reader.FullPath}";
                 if (originalPath != null)
                 {
-                    str += $" from {Path.GetFileName(originalPath)}";
+                    message += $" from {Path.GetFileName(originalPath)}";
                 }
-                Logger.Error(str, e);
+                Logger.Error(message, exception);
             }
             finally
             {
@@ -710,18 +884,138 @@ namespace AnimeStudio
                 }
                 reader.Dispose();
             }
+
+            return result;
+        }
+
+        private void ParseGameBlockInnerFile(
+            GameBlockLoadResult result,
+            StreamFile innerFile,
+            string containerPath,
+            string originalPath,
+            long originalOffset,
+            string unityVersion)
+        {
+            var stream = innerFile.stream;
+            innerFile.stream = null;
+            FileReader cabReader = null;
+            try
+            {
+                var dummyPath = Path.Combine(
+                    Path.GetDirectoryName(containerPath)
+                        ?? string.Empty,
+                    innerFile.fileName);
+                cabReader = new FileReader(dummyPath, stream);
+                stream = null;
+                if (cabReader.FileType == FileType.AssetsFile)
+                {
+                    try
+                    {
+                        var assetsFile = new SerializedFile(
+                            cabReader,
+                            this)
+                        {
+                            originalPath = originalPath ?? containerPath,
+                            offset = originalOffset
+                        };
+                        if (!string.IsNullOrEmpty(unityVersion)
+                            && assetsFile.header.m_Version
+                                < SerializedFileFormatVersion.Unknown_7)
+                        {
+                            assetsFile.SetVersion(unityVersion);
+                        }
+                        CheckStrippedVersion(assetsFile);
+                        result.Assets.Add(assetsFile);
+                        cabReader = null;
+                    }
+                    catch (Exception exception)
+                        when (exception is not OutOfMemoryException)
+                    {
+                        Logger.Error(
+                            $"Error while reading assets file " +
+                            $"{cabReader.FullPath} from " +
+                            $"{Path.GetFileName(originalPath ?? containerPath)}",
+                            exception);
+                        result.Resources.Add(new PendingResource(
+                            cabReader.FileName,
+                            cabReader));
+                        cabReader = null;
+                    }
+                }
+                else
+                {
+                    Logger.Verbose("Caching resource stream");
+                    result.Resources.Add(new PendingResource(
+                        innerFile.fileName,
+                        cabReader));
+                    cabReader = null;
+                }
+            }
+            finally
+            {
+                cabReader?.Dispose();
+                stream?.Dispose();
+            }
+        }
+
+        private void MergeGameBlockResult(GameBlockLoadResult result)
+        {
+            if (result == null)
+            {
+                return;
+            }
+
+            foreach (var assetsFile in result.Assets)
+            {
+                if (assetsFileListHash.Add(assetsFile.fileName))
+                {
+                    assetsFileList.Add(assetsFile);
+                    assetsFileIndexCache.Add(
+                        assetsFile.fileName,
+                        assetsFileList.Count - 1);
+                }
+                else
+                {
+                    Logger.Info(
+                        $"Skipping {assetsFile.originalPath} " +
+                        $"({assetsFile.fileName})");
+                    assetsFile.reader.Dispose();
+                }
+            }
+            result.Assets.Clear();
+
+            foreach (var resource in result.Resources)
+            {
+                if (!TryAddResourceFileReader(
+                    resource.Key,
+                    resource.Reader))
+                {
+                    resource.Reader.Dispose();
+                }
+            }
+            result.Resources.Clear();
         }
 
         public void CheckStrippedVersion(SerializedFile assetsFile)
         {
-            if(Game.Type.IsAzurPromiliaCBT2() && assetsFile.IsVersionStripped) SpecifyUnityVersion = "2022.3.62f3";
-            if (assetsFile.IsVersionStripped && string.IsNullOrEmpty(SpecifyUnityVersion))
+            lock (versionSync)
             {
-                throw new Exception("The Unity version has been stripped, please set the version in the options");
-            }
-            if (!string.IsNullOrEmpty(SpecifyUnityVersion))
-            {
-                assetsFile.SetVersion(SpecifyUnityVersion);
+                if (Game.Type.IsAzurPromiliaCBT2()
+                    && assetsFile.IsVersionStripped)
+                {
+                    SpecifyUnityVersion = "2022.3.62f3";
+                }
+                if (assetsFile.IsVersionStripped
+                    && string.IsNullOrEmpty(SpecifyUnityVersion))
+                {
+                    throw new Exception(
+                        "The Unity version has been stripped, please set " +
+                        "the version in the options");
+                }
+                if (!string.IsNullOrEmpty(SpecifyUnityVersion))
+                {
+                    assetsFile.SetVersion(SpecifyUnityVersion);
+                }
             }
         }
 
@@ -746,8 +1040,11 @@ namespace AnimeStudio
                 resourceFileReaders.Clear();
             }
 
-            containerStorageManager?.Dispose();
-            containerStorageManager = null;
+            lock (containerStorageManagerSync)
+            {
+                containerStorageManager?.Dispose();
+                containerStorageManager = null;
+            }
 
             assetsFileIndexCache.Clear();
             importFiles.Clear();

@@ -11,9 +11,11 @@ namespace AnimeStudio
             int toExclusive,
             int workerCount,
             CancellationToken cancellationToken,
-            Action<int> body)
+            Action<int> body,
+            string threadNamePrefix = "AnimeStudio worker")
         {
             ArgumentNullException.ThrowIfNull(body);
+            ArgumentException.ThrowIfNullOrWhiteSpace(threadNamePrefix);
             if (workerCount < 1)
             {
                 throw new ArgumentOutOfRangeException(nameof(workerCount));
@@ -94,7 +96,7 @@ namespace AnimeStudio
                     () => RunWorker(capturedWorkerIndex))
                 {
                     IsBackground = true,
-                    Name = $"AnimeStudio worker {capturedWorkerIndex}"
+                    Name = $"{threadNamePrefix} {capturedWorkerIndex}"
                 };
                 threads[workerIndex - 1].Start();
             }

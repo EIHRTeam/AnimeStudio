@@ -81,6 +81,11 @@ preserving existing schemas, filter order, and output compatibility.
   write decoded blocks to precomputed offsets, and cap aggregate queued plus
   active scratch buffers at 256 MiB. Preserve explicit sequential fallback
   for formats such as HNACB1 whose later blocks depend on earlier output.
+- For block files containing many independent single-block containers, probe
+  layouts without decoding payloads, create independent read-only source
+  ranges, and process containers under the same global worker budget. Disable
+  nested block workers while range workers are active, then merge parsed
+  assets and resources in original offset and inner-file order.
 - Synchronize shared resource stream reads so seek/read operations cannot
   overlap. Keep FBX native export in an explicit serial critical section until
   the native library is proven reentrant.
@@ -112,6 +117,9 @@ preserving existing schemas, filter order, and output compatibility.
 - Smoke coverage proves multi-worker and single-worker container block
   decoding, positioned-write ordering, cancellation, decoder-failure
   propagation, and temporary-file cleanup.
+- Smoke coverage proves concatenated container-range discovery returns exact,
+  ordered, independent source views and rejects unsupported encrypted layouts
+  by falling back to sequential loading.
 - Published runtime configuration keeps Server GC disabled while preserving
   concurrent GC, the 75 percent heap hard limit, and retained VM policy.
 - `git diff --check` and active-file legacy reference scans pass.

@@ -39,6 +39,7 @@ try
     VerifySharedSlices();
     VerifyConcurrentDiskSlices();
     VerifyContainerBlockPipeline();
+    VerifyBlockFileRangeDiscovery();
     VerifyConcurrentResourceReaders();
     VerifyMultiWorkerObjectParsing();
     VerifyBackingHashesAndCleanup();
@@ -370,6 +371,90 @@ static void VerifyContainerBlockPipeline()
     VerifySingleWorkerContainerPipeline(data, blocks);
     VerifyContainerPipelineCancellation(data, blocks);
     VerifyContainerPipelineFailureCleanup(data, blocks);
+}
+
+static void VerifyBlockFileRangeDiscovery()
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        "animestudio-block-ranges-"
+        + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var path = Path.Combine(root, "ranges.chk");
+    var expectedLengths = new long[] { 256, 384, 512, 640 };
+    try
+    {
+        using (var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None))
+        {
+            Span<byte> number = stackalloc byte[8];
+            foreach (var length in expectedLengths)
+            {
+                var header = new MemoryStream();
+                header.Write(Encoding.ASCII.GetBytes("UnityFS"));
+                header.WriteByte(0);
+                BinaryPrimitives.WriteUInt32BigEndian(number, 6);
+                header.Write(number[..4]);
+                header.Write(Encoding.ASCII.GetBytes("5.x.x"));
+                header.WriteByte(0);
+                header.Write(Encoding.ASCII.GetBytes("2021.3.3f5"));
+                header.WriteByte(0);
+                BinaryPrimitives.WriteInt64BigEndian(number, length);
+                header.Write(number);
+                Assert(
+                    header.Length < length,
+                    "Synthetic UnityFS header exceeds its range.");
+                header.Position = 0;
+                header.CopyTo(stream);
+                stream.Write(new byte[length - header.Length]);
+            }
+        }
+
+        using var reader = new FileReader(path);
+        Assert(
+            BlockFileRangeDiscovery.TryDiscover(
+                reader,
+                new Game(GameType.Normal, "range-smoke"),
+                requestedOffsets: null,
+                out var ranges),
+            "Block-file range discovery rejected valid UnityFS ranges.");
+        Assert(
+            ranges.Count == expectedLengths.Length,
+            "Block-file range discovery returned the wrong range count.");
+        Assert(
+            !BlockFileRangeDiscovery.TryDiscover(
+                reader,
+                new Game(GameType.UnityCN, "encrypted-range-smoke"),
+                requestedOffsets: null,
+                out _),
+            "Encrypted UnityFS layout did not fall back to sequential load.");
+
+        long expectedOffset = 0;
+        for (var index = 0; index < ranges.Count; index++)
+        {
+            Assert(
+                ranges[index].Offset == expectedOffset,
+                "Block-file range discovery changed source order.");
+            Assert(
+                ranges[index].Length == expectedLengths[index],
+                "Block-file range discovery returned the wrong length.");
+            using var view = BlockFileRangeDiscovery.CreateView(
+                reader.BaseStream,
+                ranges[index].Offset,
+                ranges[index].Length);
+            Assert(
+                view.Length == expectedLengths[index],
+                "Independent block-file view has the wrong length.");
+            expectedOffset += expectedLengths[index];
+        }
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
 }
 
 static void VerifySingleWorkerContainerPipeline(

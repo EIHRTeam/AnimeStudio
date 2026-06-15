@@ -56,11 +56,15 @@ Independent container blocks use one bounded producer/worker pipeline for
 VFS, UnityFS/ENCR, Mhy, BLB, and HYG. Input bytes are read in source order,
 decode workers own their buffers, and decoded bytes are written to fixed
 backing-store offsets under a 256 MiB scratch budget. HNACB1 remains
-sequential because later blocks depend on the first block. Future CPU-heavy
-streaming or conversion work must reuse the process-wide worker budget,
-isolate mutable state, bound queued memory, preserve deterministic output
-order, propagate cancellation, and demonstrate concurrent named workers on
-Debian before acceptance.
+sequential because later blocks depend on the first block. Concatenated VFS
+and ordinary UnityFS block files are layout-probed first, then independent
+container ranges run under the same global budget with nested block workers
+disabled; parsed results merge by original offset. Unsupported encrypted
+headers fall back to the sequential path. Future CPU-heavy streaming or
+conversion work must reuse the process-wide worker budget, isolate mutable
+state, bound queued memory, preserve deterministic output order, propagate
+cancellation, and demonstrate concurrent named workers on Debian before
+acceptance.
 
 Every implementation session records its work in `STATUS.md`. `PLAN.md`
 contains only the current phase details, while `ROADMAP.md` owns long-term and

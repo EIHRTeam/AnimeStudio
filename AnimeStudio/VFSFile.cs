@@ -8,6 +8,15 @@ namespace AnimeStudio
 {
     public class VFSFile
     {
+        internal sealed class Layout
+        {
+            internal BundleFile.Header Header;
+            internal List<BundleFile.StorageBlock> Blocks;
+            internal List<BundleFile.Node> Directory;
+            internal long DataOffset;
+            internal long TotalLength;
+        }
+
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
         private readonly ContainerStorageManager storageManager;
@@ -79,53 +88,19 @@ namespace AnimeStudio
             try
             {
                 Offset = reader.Position;
-                reader.Endian = EndianType.BigEndian;
-
-                if (!VFSUtils.IsValidHeader(reader, game))
-                {
-                    throw new Exception("Not a VFS file / VFS version mismatch");
-                }
-
-                // read header
-                reader.ReadBytes(8);
-                m_Header = VFSUtils.ReadHeader(reader, game);
+                var layout = ReadLayout(
+                    reader,
+                    game,
+                    includeDirectory: true);
+                m_Header = layout.Header;
+                m_BlocksInfo = layout.Blocks;
+                m_DirectoryInfo = layout.Directory;
                 Logger.Verbose($"Header : {m_Header.ToString()}");
-
-                // go to blocks info
-                uint blockInfosOffset;
-
-                if ((m_Header.flags & ArchiveFlags.BlocksInfoAtTheEnd) != 0)
-                    blockInfosOffset = (uint)(m_Header.size) - m_Header.compressedBlocksInfoSize;
-                else
-                {
-                    if (m_Header.encFlags >= 7)
-                        blockInfosOffset = 48;
-                    else
-                        blockInfosOffset = 40;
-                }
-
-                reader.Position = Offset + blockInfosOffset;
-                ReadBlocksInfoAndDirectory(reader, game);
-
-                // go to data
-                uint dataOffset;
-
-                if (m_Header.encFlags >= 7)
-                    dataOffset = 48;
-                else
-                    dataOffset = 40;
-                if (((m_Header.flags) & ArchiveFlags.BlocksInfoAtTheEnd) == 0)
-                {
-                    var temp = m_Header.compressedBlocksInfoSize;
-                    if (((m_Header.flags) & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
-                        temp = (temp + 15) & 0xFFFFFFF0;
-                    dataOffset += temp;
-                }
-
-                reader.Position = Offset + dataOffset;
+                reader.Position = checked(Offset + layout.DataOffset);
 
                 using var blocksStream = CreateBlocksStream(path);
                 ReadBlocks(reader, blocksStream, game);
+                reader.Position = checked(Offset + layout.TotalLength);
                 ReadFiles(blocksStream);
             }
             finally
@@ -137,46 +112,144 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadBlocksInfoAndDirectory(FileReader reader, GameType game)
+        internal static long ReadContainerLength(
+            FileReader reader,
+            GameType game)
         {
-            byte[] blocksInfoBytes = reader.ReadBytes((int)m_Header.compressedBlocksInfoSize);
+            return ReadLayout(
+                reader,
+                game,
+                includeDirectory: false).TotalLength;
+        }
+
+        private static Layout ReadLayout(
+            FileReader reader,
+            GameType game,
+            bool includeDirectory)
+        {
+            var offset = reader.Position;
+            reader.Endian = EndianType.BigEndian;
+            if (!VFSUtils.IsValidHeader(reader, game))
+            {
+                throw new InvalidDataException(
+                    "Not a VFS file / VFS version mismatch.");
+            }
+
+            reader.ReadBytes(8);
+            var header = VFSUtils.ReadHeader(reader, game);
+            var blockInfosOffset =
+                (header.flags & ArchiveFlags.BlocksInfoAtTheEnd) != 0
+                    ? checked(header.size - header.compressedBlocksInfoSize)
+                    : header.encFlags >= 7
+                        ? 48L
+                        : 40L;
+            if (blockInfosOffset < 0)
+            {
+                throw new InvalidDataException(
+                    $"VFS block-info offset is negative: " +
+                    $"{blockInfosOffset}.");
+            }
+
+            reader.Position = checked(offset + blockInfosOffset);
+            var blocksInfoBytes = reader.ReadBytes(
+                checked((int)header.compressedBlocksInfoSize));
 
             MemoryStream blocksInfoUncompressedStream;
-            if (((int)m_Header.flags & 0x3F) != 0)
+            if (((int)header.flags & 0x3F) != 0)
             {
-                // compressed + encrypted
                 VFSUtils.DecryptBlock(blocksInfoBytes, game);
 
-                var uncompressedSize = m_Header.uncompressedBlocksInfoSize;
-                var blocksInfoBytesSpan = blocksInfoBytes.AsSpan(0, blocksInfoBytes.Length);
+                var uncompressedSize =
+                    header.uncompressedBlocksInfoSize;
+                var blocksInfoBytesSpan = blocksInfoBytes.AsSpan();
                 var uncompressedBytes = new byte[checked((int)uncompressedSize)];
                 try
                 {
                     var uncompressedBytesSpan = uncompressedBytes.AsSpan();
-                    // normal LZ4
-                    var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
+                    var numWrite = LZ4.Instance.Decompress(
+                        blocksInfoBytesSpan,
+                        uncompressedBytesSpan);
 
                     if (numWrite != uncompressedSize)
                     {
-                        throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
+                        throw new InvalidDataException(
+                            $"VFS block-info decompression wrote " +
+                            $"{numWrite} bytes; expected " +
+                            $"{uncompressedSize} bytes.");
                     }
-                    blocksInfoUncompressedStream = new MemoryStream(uncompressedBytes, writable: false);
-                } catch (Exception e) when (e is not OutOfMemoryException)
-                {
-                    throw new IOException($"Lz4 decompression error {e.Message}");
+                    blocksInfoUncompressedStream = new MemoryStream(
+                        uncompressedBytes,
+                        writable: false);
                 }
-            } else
+                catch (Exception exception)
+                    when (exception is not OutOfMemoryException)
+                {
+                    throw new IOException(
+                        $"VFS block-info decompression failed: " +
+                        $"{exception.Message}",
+                        exception);
+                }
+            }
+            else
             {
                 blocksInfoUncompressedStream = new MemoryStream(blocksInfoBytes);
             }
 
-            // read
-            using (var blocksInfoReader = new EndianBinaryReader(blocksInfoUncompressedStream))
+            List<BundleFile.StorageBlock> blocks;
+            List<BundleFile.Node> directory;
+            using (blocksInfoUncompressedStream)
+            using (var blocksInfoReader = new EndianBinaryReader(
+                blocksInfoUncompressedStream))
             {
-                reader.Endian = EndianType.BigEndian;
-                m_BlocksInfo = VFSUtils.ReadBlocksInfos(blocksInfoReader, game);
-                m_DirectoryInfo = VFSUtils.ReadDirectoryInfos(blocksInfoReader, game);
+                blocks = VFSUtils.ReadBlocksInfos(
+                    blocksInfoReader,
+                    game);
+                directory = includeDirectory
+                    ? VFSUtils.ReadDirectoryInfos(
+                        blocksInfoReader,
+                        game)
+                    : new List<BundleFile.Node>();
             }
+
+            var dataOffset = header.encFlags >= 7 ? 48L : 40L;
+            if ((header.flags & ArchiveFlags.BlocksInfoAtTheEnd) == 0)
+            {
+                var blockInfoLength =
+                    (long)header.compressedBlocksInfoSize;
+                if ((header.flags
+                        & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
+                {
+                    blockInfoLength = checked(
+                        (blockInfoLength + 15) & ~15L);
+                }
+
+                dataOffset = checked(dataOffset + blockInfoLength);
+            }
+
+            var compressedDataLength = blocks.Aggregate(
+                0L,
+                (total, block) =>
+                    checked(total + block.compressedSize));
+            var dataEnd = checked(dataOffset + compressedDataLength);
+            var blockInfoEnd = checked(
+                blockInfosOffset + header.compressedBlocksInfoSize);
+            var totalLength = Math.Max(dataEnd, blockInfoEnd);
+            var availableLength = reader.Length - offset;
+            if (totalLength <= 0 || totalLength > availableLength)
+            {
+                throw new InvalidDataException(
+                    $"VFS container length {totalLength} is outside " +
+                    $"the available range {availableLength}.");
+            }
+
+            return new Layout
+            {
+                Header = header,
+                Blocks = blocks,
+                Directory = directory,
+                DataOffset = dataOffset,
+                TotalLength = totalLength
+            };
         }
 
         private SharedBackingStore CreateBlocksStream(string path)
