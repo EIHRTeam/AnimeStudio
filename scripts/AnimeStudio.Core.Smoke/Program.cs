@@ -42,6 +42,7 @@ try
     VerifyBlockFileRangeDiscovery();
     VerifyConcurrentResourceReaders();
     VerifyConcurrentPPtrFileCache();
+    VerifyBoundedParallelWorkerSlots();
     VerifyMultiWorkerObjectParsing();
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
@@ -797,6 +798,43 @@ static void VerifyMultiWorkerObjectParsing()
         manager.Clear();
         File.Delete(sourcePath);
     }
+}
+
+static void VerifyBoundedParallelWorkerSlots()
+{
+    const int workerCount = 4;
+    const int iterationCount = 128;
+    var ownerThreads = Enumerable.Repeat(-1, workerCount).ToArray();
+    var processedByWorker = new int[workerCount];
+
+    BoundedParallel.For(
+        0,
+        iterationCount,
+        workerCount,
+        CancellationToken.None,
+        (workerIndex, _) =>
+        {
+            Assert(
+                workerIndex >= 0 && workerIndex < workerCount,
+                "Bounded parallel returned an invalid worker slot.");
+            var threadId = Environment.CurrentManagedThreadId;
+            var previousThread = Interlocked.CompareExchange(
+                ref ownerThreads[workerIndex],
+                threadId,
+                -1);
+            Assert(
+                previousThread == -1 || previousThread == threadId,
+                "A bounded parallel worker slot moved between threads.");
+            Interlocked.Increment(ref processedByWorker[workerIndex]);
+            Thread.SpinWait(10_000);
+        });
+
+    Assert(
+        ownerThreads.Distinct().Count() == workerCount,
+        "Bounded parallel worker slots did not use distinct threads.");
+    Assert(
+        processedByWorker.All(count => count > 0),
+        "A bounded parallel worker slot did not process any work.");
 }
 
 static void VerifyAggregateMemoryBudget()

@@ -15,6 +15,24 @@ namespace AnimeStudio
             string threadNamePrefix = "AnimeStudio worker")
         {
             ArgumentNullException.ThrowIfNull(body);
+            For(
+                fromInclusive,
+                toExclusive,
+                workerCount,
+                cancellationToken,
+                (_, index) => body(index),
+                threadNamePrefix);
+        }
+
+        internal static void For(
+            int fromInclusive,
+            int toExclusive,
+            int workerCount,
+            CancellationToken cancellationToken,
+            Action<int, int> body,
+            string threadNamePrefix = "AnimeStudio worker")
+        {
+            ArgumentNullException.ThrowIfNull(body);
             ArgumentException.ThrowIfNullOrWhiteSpace(threadNamePrefix);
             if (workerCount < 1)
             {
@@ -35,7 +53,7 @@ namespace AnimeStudio
                     index++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    body(index);
+                    body(0, index);
                 }
 
                 return;
@@ -57,7 +75,9 @@ namespace AnimeStudio
                         start.Wait(cancellationToken);
                     }
 
-                    ProcessIndex(checked(fromInclusive + workerIndex));
+                    ProcessIndex(
+                        workerIndex,
+                        checked(fromInclusive + workerIndex));
                     while (Volatile.Read(ref failure) == null)
                     {
                         var index = Interlocked.Increment(ref nextIndex) - 1;
@@ -66,7 +86,7 @@ namespace AnimeStudio
                             break;
                         }
 
-                        ProcessIndex(index);
+                        ProcessIndex(workerIndex, index);
                     }
                 }
                 catch (Exception exception)
@@ -78,12 +98,12 @@ namespace AnimeStudio
                 }
             }
 
-            void ProcessIndex(int index)
+            void ProcessIndex(int workerIndex, int index)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (Volatile.Read(ref failure) == null)
                 {
-                    body(index);
+                    body(workerIndex, index);
                 }
             }
 

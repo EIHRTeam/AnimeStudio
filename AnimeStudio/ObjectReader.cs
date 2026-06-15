@@ -75,35 +75,29 @@ namespace AnimeStudio
                     && memoryStream.TryGetBuffer(out _);
         }
 
-        internal static ObjectReader CreateIndependent(
-            SerializedFile assetsFile,
-            ObjectInfo objectInfo,
-            Game game)
+        internal static EndianBinaryReader CreateIndependentReader(
+            SerializedFile assetsFile)
         {
-            Stream objectStream;
+            Stream stream;
             var sourceStream = assetsFile.reader.BaseStream;
             if (sourceStream is ReadOnlySliceStream sliceStream)
             {
-                objectStream = sliceStream.CreateView(
-                    objectInfo.byteStart,
-                    objectInfo.byteSize);
+                stream = sliceStream.CreateView(0, sliceStream.Length);
             }
             else if (sourceStream is FileStream fileStream)
             {
-                objectStream = new ReadOnlyRandomAccessStream(
+                stream = new ReadOnlyRandomAccessStream(
                     fileStream.SafeFileHandle,
-                    objectInfo.byteStart,
-                    objectInfo.byteSize);
+                    0,
+                    fileStream.Length);
             }
             else if (sourceStream is MemoryStream memoryStream
                 && memoryStream.TryGetBuffer(out var memorySegment))
             {
-                objectStream = new ReadOnlyRandomAccessStream(
+                stream = new ReadOnlyRandomAccessStream(
                     memorySegment.Array,
-                    checked(
-                        memorySegment.Offset
-                        + checked((int)objectInfo.byteStart)),
-                    checked((int)objectInfo.byteSize));
+                    memorySegment.Offset,
+                    checked((int)memoryStream.Length));
             }
             else
             {
@@ -112,24 +106,9 @@ namespace AnimeStudio
                     "support independent object reads.");
             }
 
-            var relativeObjectInfo = new ObjectInfo
-            {
-                byteStart = 0,
-                byteSize = objectInfo.byteSize,
-                typeID = objectInfo.typeID,
-                classID = objectInfo.classID,
-                isDestroyed = objectInfo.isDestroyed,
-                stripped = objectInfo.stripped,
-                m_PathID = objectInfo.m_PathID,
-                serializedType = objectInfo.serializedType
-            };
-            return new ObjectReader(
-                objectStream,
-                assetsFile.reader.Endian,
-                assetsFile,
-                relativeObjectInfo,
-                game,
-                objectInfo.byteStart);
+            return new EndianBinaryReader(
+                stream,
+                assetsFile.reader.Endian);
         }
 
         public override int Read(byte[] buffer, int index, int count)

@@ -1102,21 +1102,47 @@ namespace AnimeStudio
                                 assetsFile);
                         if (useIndependentReaders)
                         {
-                            BoundedParallel.For(
-                                0,
-                                parsedObjects.Length,
+                            var activeWorkerCount = Math.Min(
                                 objectParallelism,
-                                tokenSource.Token,
-                                index =>
+                                parsedObjects.Length);
+                            var workerReaders =
+                                new EndianBinaryReader[activeWorkerCount];
+                            try
+                            {
+                                for (var index = 0;
+                                    index < workerReaders.Length;
+                                    index++)
                                 {
-                                    parsedObjects[index] = ReadAssetObject(
-                                        assetsFile,
-                                        assetsFile.m_Objects[index],
-                                        independentReader: true);
-                                    Progress.Report(
-                                        Interlocked.Increment(ref i),
-                                        progressCount);
-                                });
+                                    workerReaders[index] =
+                                        ObjectReader
+                                            .CreateIndependentReader(
+                                                assetsFile);
+                                }
+
+                                BoundedParallel.For(
+                                    0,
+                                    parsedObjects.Length,
+                                    objectParallelism,
+                                    tokenSource.Token,
+                                    (workerIndex, index) =>
+                                    {
+                                        parsedObjects[index] =
+                                            ReadAssetObject(
+                                                assetsFile,
+                                                assetsFile.m_Objects[index],
+                                                workerReaders[workerIndex]);
+                                        Progress.Report(
+                                            Interlocked.Increment(ref i),
+                                            progressCount);
+                                    });
+                            }
+                            finally
+                            {
+                                foreach (var workerReader in workerReaders)
+                                {
+                                    workerReader?.Dispose();
+                                }
+                            }
                         }
                         else
                         {
@@ -1129,7 +1155,7 @@ namespace AnimeStudio
                                 parsedObjects[index] = ReadAssetObject(
                                     assetsFile,
                                     assetsFile.m_Objects[index],
-                                    independentReader: false);
+                                    assetsFile.reader);
                                 Progress.Report(
                                     Interlocked.Increment(ref i),
                                     progressCount);
@@ -1169,18 +1195,13 @@ namespace AnimeStudio
         private Object ReadAssetObject(
             SerializedFile assetsFile,
             ObjectInfo objectInfo,
-            bool independentReader)
+            EndianBinaryReader reader)
         {
-            var objectReader = independentReader
-                ? ObjectReader.CreateIndependent(
-                    assetsFile,
-                    objectInfo,
-                    Game)
-                : new ObjectReader(
-                    assetsFile.reader,
-                    assetsFile,
-                    objectInfo,
-                    Game);
+            var objectReader = new ObjectReader(
+                reader,
+                assetsFile,
+                objectInfo,
+                Game);
             try
             {
                 return objectReader.type switch

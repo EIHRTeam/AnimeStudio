@@ -554,19 +554,43 @@ namespace AnimeStudio
                 && ObjectReader.SupportsIndependentReading(assetsFile);
             if (useIndependentReaders)
             {
-                BoundedParallel.For(
-                    0,
-                    objectScans.Length,
+                var activeWorkerCount = Math.Min(
                     objectParallelism,
-                    tokenSource.Token,
-                    index =>
+                    objectScans.Length);
+                var workerReaders =
+                    new EndianBinaryReader[activeWorkerCount];
+                try
+                {
+                    for (var index = 0;
+                        index < workerReaders.Length;
+                        index++)
                     {
-                        objectScans[index] = ScanAssetMapObject(
-                            file,
-                            assetsFile,
-                            assetsFile.m_Objects[index],
-                            independentReader: true);
-                    });
+                        workerReaders[index] =
+                            ObjectReader.CreateIndependentReader(
+                                assetsFile);
+                    }
+
+                    BoundedParallel.For(
+                        0,
+                        objectScans.Length,
+                        objectParallelism,
+                        tokenSource.Token,
+                        (workerIndex, index) =>
+                        {
+                            objectScans[index] = ScanAssetMapObject(
+                                file,
+                                assetsFile,
+                                assetsFile.m_Objects[index],
+                                workerReaders[workerIndex]);
+                        });
+                }
+                finally
+                {
+                    foreach (var workerReader in workerReaders)
+                    {
+                        workerReader?.Dispose();
+                    }
+                }
             }
             else
             {
@@ -577,7 +601,7 @@ namespace AnimeStudio
                         file,
                         assetsFile,
                         assetsFile.m_Objects[index],
-                        independentReader: false);
+                        assetsFile.reader);
                 }
             }
 
@@ -615,18 +639,13 @@ namespace AnimeStudio
             string file,
             SerializedFile assetsFile,
             ObjectInfo objectInfo,
-            bool independentReader)
+            EndianBinaryReader reader)
         {
-            var objectReader = independentReader
-                ? ObjectReader.CreateIndependent(
-                    assetsFile,
-                    objectInfo,
-                    assetsManager.Game)
-                : new ObjectReader(
-                    assetsFile.reader,
-                    assetsFile,
-                    objectInfo,
-                    assetsManager.Game);
+            var objectReader = new ObjectReader(
+                reader,
+                assetsFile,
+                objectInfo,
+                assetsManager.Game);
             var obj = new Object(objectReader);
             var asset = new AssetMapEntryRecord
             {
