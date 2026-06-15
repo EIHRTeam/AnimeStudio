@@ -41,6 +41,7 @@ try
     VerifyContainerBlockPipeline();
     VerifyBlockFileRangeDiscovery();
     VerifyConcurrentResourceReaders();
+    VerifyConcurrentPPtrFileCache();
     VerifyMultiWorkerObjectParsing();
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
@@ -455,6 +456,45 @@ static void VerifyBlockFileRangeDiscovery()
     {
         Directory.Delete(root, recursive: true);
     }
+}
+
+static void VerifyConcurrentPPtrFileCache()
+{
+    var manager = new AssetsManager();
+    var source = (SerializedFile)RuntimeHelpers.GetUninitializedObject(
+        typeof(SerializedFile));
+    var target = (SerializedFile)RuntimeHelpers.GetUninitializedObject(
+        typeof(SerializedFile));
+    source.assetsManager = manager;
+    source.m_Externals =
+    [
+        new FileIdentifier
+        {
+            fileName = "CAB-concurrent-target"
+        }
+    ];
+    target.fileName = "CAB-concurrent-target";
+    target.ObjectsDic = new Dictionary<long, AnimeStudio.Object>();
+    manager.assetsFileList.Add(target);
+
+    Parallel.For(0, 1024, iteration =>
+    {
+        var pointer = new PPtr<AnimeStudio.Object>(
+            1,
+            42,
+            source);
+        pointer.TryGet(out AnimeStudio.Object ignored);
+    });
+
+    Assert(
+        manager.assetsFileIndexCache.Count == 1,
+        "Concurrent PPtr resolution inserted duplicate file-cache keys.");
+    Assert(
+        manager.assetsFileIndexCache.TryGetValue(
+            "CAB-concurrent-target",
+            out var index)
+        && index == 0,
+        "Concurrent PPtr resolution cached the wrong file index.");
 }
 
 static void VerifySingleWorkerContainerPipeline(

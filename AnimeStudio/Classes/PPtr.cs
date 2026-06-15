@@ -55,11 +55,12 @@ namespace AnimeStudio
                 {
                     var m_External = assetsFile.m_Externals[m_FileID - 1];
                     var name = m_External.fileName;
-                    if (!assetsFileIndexCache.TryGetValue(name, out index))
-                    {
-                        index = assetsFileList.FindIndex(x => x.fileName.Equals(name, StringComparison.OrdinalIgnoreCase));
-                        assetsFileIndexCache.Add(name, index);
-                    }
+                    index = assetsFileIndexCache.GetOrAdd(
+                        name,
+                        key => assetsFileList.FindIndex(
+                            file => file.fileName.Equals(
+                                key,
+                                StringComparison.OrdinalIgnoreCase)));
                 }
 
                 if (index >= 0)
@@ -136,11 +137,12 @@ namespace AnimeStudio
             var assetsFileList = assetsManager.assetsFileList;
             var assetsFileIndexCache = assetsManager.assetsFileIndexCache;
 
-            if (!assetsFileIndexCache.TryGetValue(name, out index))
-            {
-                index = assetsFileList.FindIndex(x => x.fileName.Equals(name, StringComparison.OrdinalIgnoreCase));
-                assetsFileIndexCache.Add(name, index);
-            }
+            index = assetsFileIndexCache.GetOrAdd(
+                name,
+                key => assetsFileList.FindIndex(
+                    file => file.fileName.Equals(
+                        key,
+                        StringComparison.OrdinalIgnoreCase)));
 
             m_PathID = m_Object.m_PathID;
         }

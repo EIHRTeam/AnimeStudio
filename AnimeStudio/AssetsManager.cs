@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -25,7 +26,8 @@ namespace AnimeStudio
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
 
-        internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        internal ConcurrentDictionary<string, int> assetsFileIndexCache =
+            new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
         private readonly object resourceFileReadersSync = new();
 
@@ -293,7 +295,8 @@ namespace AnimeStudio
                     var assetsFile = new SerializedFile(reader, this);
                     CheckStrippedVersion(assetsFile);
                     assetsFileList.Add(assetsFile);
-                    assetsFileIndexCache.Add(assetsFile.fileName, assetsFileList.Count - 1);
+                    assetsFileIndexCache[assetsFile.fileName] =
+                        assetsFileList.Count - 1;
                     assetsFileListHash.Add(assetsFile.fileName);
 
                     foreach (var sharedFile in assetsFile.m_Externals)
@@ -358,7 +361,8 @@ namespace AnimeStudio
                     }
                     CheckStrippedVersion(assetsFile);
                     assetsFileList.Add(assetsFile);
-                    assetsFileIndexCache.Add(assetsFile.fileName, assetsFileList.Count - 1);
+                    assetsFileIndexCache[assetsFile.fileName] =
+                        assetsFileList.Count - 1;
                     assetsFileListHash.Add(assetsFile.fileName);
                 }
                 catch (Exception e) when (e is not OutOfMemoryException)
@@ -970,9 +974,8 @@ namespace AnimeStudio
                 if (assetsFileListHash.Add(assetsFile.fileName))
                 {
                     assetsFileList.Add(assetsFile);
-                    assetsFileIndexCache.Add(
-                        assetsFile.fileName,
-                        assetsFileList.Count - 1);
+                    assetsFileIndexCache[assetsFile.fileName] =
+                        assetsFileList.Count - 1;
                 }
                 else
                 {

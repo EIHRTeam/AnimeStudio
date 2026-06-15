@@ -114,6 +114,8 @@ preserving existing schemas, filter order, and output compatibility.
 - Smoke coverage proves worker option validation, deterministic output-path
   reservation, shared resource-reader correctness under concurrency, and
   multi-worker object parsing without duplicate or missing objects.
+- Smoke coverage proves concurrent PPtr external-file resolution uses one
+  atomic, case-insensitive cache entry per CAB name.
 - Smoke coverage proves multi-worker and single-worker container block
   decoding, positioned-write ordering, cancellation, decoder-failure
   propagation, and temporary-file cleanup.
