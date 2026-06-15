@@ -30,6 +30,10 @@ the native-library layout and dependencies, and prints the archive SHA256.
 AnimeStudio.CLI <input_path> <output_path> --game ArknightsEndfield
 ```
 
+Parsing, AssetMap scanning, and non-FBX export use the process-visible logical
+CPU count by default. Use `--workers <count>` to set bounded parallelism;
+`--workers 1` is intended for diagnostics and serial performance comparisons.
+
 Run `AnimeStudio.CLI --help` for the complete option list.
 
 ## Publish

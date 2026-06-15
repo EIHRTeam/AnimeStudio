@@ -23,6 +23,8 @@ try
     if (runtimeCompatible)
     {
         VerifyRunSummary(publishDirectory);
+        VerifyWorkerValidation(publishDirectory);
+        VerifyExportPathCoordination(publishDirectory);
         VerifyAssetMapFailureTiming(publishDirectory);
         VerifyExplicitTypeFilter(publishDirectory);
         VerifyScrapeChunkMerge(publishDirectory);
@@ -65,7 +67,7 @@ static void VerifyRuntimeConfiguration(string publishDirectory)
         .GetProperty("runtimeOptions")
         .GetProperty("configProperties");
 
-    Assert(!properties.GetProperty("System.GC.Server").GetBoolean(), "Server GC must remain disabled.");
+    Assert(properties.GetProperty("System.GC.Server").GetBoolean(), "Server GC must be enabled.");
     Assert(properties.GetProperty("System.GC.Concurrent").GetBoolean(), "Concurrent GC must remain enabled.");
     Assert(
         properties.GetProperty("System.GC.HeapHardLimitPercent").GetInt32() == 75,
@@ -193,6 +195,8 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
                     "AnimatorController:Both",
                     "--group_assets",
                     "ByType",
+                    "--workers",
+                    "2",
                 }
             ])!;
 
@@ -206,6 +210,9 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
         var output = capturedOutput.ToString().TrimEnd();
         Assert(output.Contains("Run summary:", StringComparison.Ordinal), "CLI run summary is missing.");
         Assert(
+            output.Contains("Using 2 workers across ", StringComparison.Ordinal),
+            "CLI did not apply the explicit worker count.");
+        Assert(
             output.Contains("Input size before extraction: 0 B (0 bytes)", StringComparison.Ordinal),
             "CLI run summary has an incorrect input size.");
         Assert(
@@ -218,6 +225,176 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
     finally
     {
         Console.SetOut(originalOutput);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyWorkerValidation(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var programType = RequireType(cliAssembly, "AnimeStudio.CLI.Program");
+    var mainMethod = programType.GetMethod(
+        "Main",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(programType.FullName, "Main");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-cli-workers-smoke-{Guid.NewGuid():N}");
+    var inputDirectory = Path.Combine(temporaryDirectory, "input");
+    var outputDirectory = Path.Combine(temporaryDirectory, "output");
+    var originalOutput = Console.Out;
+    var originalError = Console.Error;
+    using var capturedOutput = new StringWriter();
+    using var capturedError = new StringWriter();
+
+    try
+    {
+        Directory.CreateDirectory(inputDirectory);
+        File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+        Console.SetOut(capturedOutput);
+        Console.SetError(capturedError);
+        var exitCode = (int)mainMethod.Invoke(
+            null,
+            [
+                new[]
+                {
+                    inputDirectory,
+                    outputDirectory,
+                    "--game",
+                    "ArknightsEndfield",
+                    "--workers",
+                    "0",
+                }
+            ])!;
+
+        Assert(exitCode != 0, "CLI accepted a zero worker count.");
+        Assert(
+            capturedError.ToString().Contains(
+                "--workers must be at least 1.",
+                StringComparison.Ordinal),
+            "CLI worker validation diagnostic is missing.");
+    }
+    finally
+    {
+        Console.SetOut(originalOutput);
+        Console.SetError(originalError);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyExportPathCoordination(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var coordinatorType = RequireType(
+        cliAssembly,
+        "AnimeStudio.CLI.ExportPathCoordinator");
+    var coordinator = Activator.CreateInstance(
+        coordinatorType,
+        nonPublic: true)
+        ?? throw new InvalidOperationException(
+            "Export path coordinator was not created.");
+    var createScope = coordinatorType.GetMethod(
+        "CreateScope",
+        BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(
+            coordinatorType.FullName,
+            "CreateScope");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-export-order-smoke-{Guid.NewGuid():N}");
+
+    try
+    {
+        Directory.CreateDirectory(temporaryDirectory);
+        var first = (IDisposable)(createScope.Invoke(
+            coordinator,
+            [0, false])
+            ?? throw new InvalidOperationException(
+                "First scope was not created."));
+        var second = (IDisposable)(createScope.Invoke(
+            coordinator,
+            [1, false])
+            ?? throw new InvalidOperationException(
+                "Second scope was not created."));
+        var scopeType = first.GetType();
+        var reserveFile = scopeType.GetMethod(
+            "TryReserveFile",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                scopeType.FullName,
+                "TryReserveFile");
+
+        var firstArguments = new object?[]
+        {
+            temporaryDirectory,
+            "same",
+            ".txt",
+            false,
+            null
+        };
+        Assert(
+            (bool)reserveFile.Invoke(first, firstArguments)!,
+            "First export path reservation failed.");
+        var firstPath = (string)firstArguments[4]!;
+
+        var secondArguments = new object?[]
+        {
+            temporaryDirectory,
+            "same",
+            ".txt",
+            false,
+            null
+        };
+        var secondReservation = Task.Run(
+            () => (bool)reserveFile.Invoke(second, secondArguments)!);
+        Assert(
+            !secondReservation.Wait(TimeSpan.FromMilliseconds(100)),
+            "A conflicting export path did not wait for the earlier asset.");
+
+        first.Dispose();
+        Assert(
+            secondReservation.Wait(TimeSpan.FromSeconds(5))
+                && secondReservation.Result,
+            "A failed earlier export did not release its reserved path.");
+        Assert(
+            string.Equals(
+                firstPath,
+                (string)secondArguments[4]!,
+                StringComparison.Ordinal),
+            "The released export path was not reused deterministically.");
+        File.WriteAllText((string)secondArguments[4]!, "done");
+        second.Dispose();
+
+        var third = (IDisposable)(createScope.Invoke(
+            coordinator,
+            [2, false])
+            ?? throw new InvalidOperationException(
+                "Third scope was not created."));
+        var thirdArguments = new object?[]
+        {
+            temporaryDirectory,
+            "same",
+            ".txt",
+            false,
+            null
+        };
+        Assert(
+            !(bool)reserveFile.Invoke(third, thirdArguments)!,
+            "An existing export path was reserved again.");
+        third.Dispose();
+    }
+    finally
+    {
         if (Directory.Exists(temporaryDirectory))
         {
             Directory.Delete(temporaryDirectory, true);

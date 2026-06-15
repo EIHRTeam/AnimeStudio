@@ -36,6 +36,9 @@ try
     VerifyObjectBoundedArrayLength();
     VerifyObjectBoundedStringLength();
     VerifySharedSlices();
+    VerifyConcurrentDiskSlices();
+    VerifyConcurrentResourceReaders();
+    VerifyMultiWorkerObjectParsing();
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
     VerifyAssetMapEntrySpool();
@@ -246,6 +249,155 @@ static void VerifyBackingHashesAndCleanup()
     finally
     {
         Directory.Delete(root, true);
+    }
+}
+
+static void VerifyConcurrentDiskSlices()
+{
+    var root = CreateTemporaryRoot();
+    try
+    {
+        var data = Enumerable.Range(0, 2 * 1024 * 1024)
+            .Select(index => (byte)(index * 17))
+            .ToArray();
+        using var manager = new ContainerStorageManager(
+            new ContainerStorageOptions
+            {
+                MemoryThresholdBytes = 0,
+                TemporaryDirectory = root
+            });
+        using var store = manager.Create(data.Length, "parallel.bundle");
+        store.Write(data);
+        store.Seal();
+
+        Parallel.For(0, 256, iteration =>
+        {
+            var offset = (iteration * 7919) % (data.Length - 4096);
+            using var slice = store.CreateSlice(offset, 4096);
+            var actual = new byte[4096];
+            slice.ReadExactly(actual);
+            Assert(
+                actual.AsSpan().SequenceEqual(data.AsSpan(offset, 4096)),
+                $"Concurrent disk slice {iteration} returned incorrect bytes.");
+        });
+    }
+    finally
+    {
+        Directory.Delete(root, true);
+    }
+}
+
+static void VerifyConcurrentResourceReaders()
+{
+    var data = Enumerable.Range(0, 1024 * 1024)
+        .Select(index => (byte)(index * 29))
+        .ToArray();
+    using var stream = new MemoryStream(data, writable: false);
+    using var reader = new BinaryReader(stream);
+
+    Parallel.For(0, 256, iteration =>
+    {
+        var offset = (iteration * 3571) % (data.Length - 2048);
+        var resourceReader = new ResourceReader(reader, offset, 2048);
+        var actual = resourceReader.GetData();
+        Assert(
+            actual.AsSpan().SequenceEqual(data.AsSpan(offset, 2048)),
+            $"Concurrent resource reader {iteration} returned incorrect bytes.");
+    });
+}
+
+static void VerifyMultiWorkerObjectParsing()
+{
+    const int fileCount = 8;
+    var manager = new AssetsManager
+    {
+        Game = new Game(GameType.Normal, "parallel-smoke"),
+        WorkerCount = 4,
+    };
+
+    try
+    {
+        for (var index = 0; index < fileCount; index++)
+        {
+            var stream = new ParallelReadProbeStream(new byte[64]);
+            var reader = new FileReader(
+                Path.Combine(
+                    Path.GetTempPath(),
+                    $"parallel-object-{index}.assets"),
+                stream);
+            reader.Endian = EndianType.LittleEndian;
+            reader.Position = 0;
+
+            var assetsFile = (SerializedFile)RuntimeHelpers
+                .GetUninitializedObject(typeof(SerializedFile));
+            assetsFile.assetsManager = manager;
+            assetsFile.reader = reader;
+            assetsFile.game = manager.Game;
+            assetsFile.fullName = reader.FullPath;
+            assetsFile.originalPath = reader.FullPath;
+            assetsFile.fileName = reader.FileName;
+            assetsFile.version = [2022, 3, 0, 0];
+            assetsFile.buildType = new BuildType("f");
+            assetsFile.m_TargetPlatform = BuildTarget.NoTarget;
+            assetsFile.header = new SerializedFileHeader
+            {
+                m_Version = SerializedFileFormatVersion.LargeFilesSupport,
+            };
+            assetsFile.m_Externals = [];
+            assetsFile.Objects = [];
+            assetsFile.ObjectsDic = [];
+            assetsFile.m_Objects =
+            [
+                new ObjectInfo
+                {
+                    byteStart = 0,
+                    byteSize = sizeof(uint),
+                    classID = (int)ClassIDType.UnknownType,
+                    m_PathID = index + 1,
+                }
+            ];
+            manager.assetsFileList.Add(assetsFile);
+        }
+
+        ParallelReadProbeStream.BeginMeasurement();
+        var readAssets = typeof(AssetsManager).GetMethod(
+            "ReadAssets",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                typeof(AssetsManager).FullName,
+                "ReadAssets");
+        try
+        {
+            readAssets.Invoke(manager, null);
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw new InvalidOperationException(
+                "Multi-worker object parsing failed.",
+                exception.InnerException ?? exception);
+        }
+        finally
+        {
+            ParallelReadProbeStream.EndMeasurement();
+        }
+
+        Assert(
+            ParallelReadProbeStream.MaximumConcurrentReads > 1,
+            "Object parsing did not use more than one worker.");
+        Assert(
+            manager.assetsFileList.Sum(file => file.Objects.Count) == fileCount,
+            "Multi-worker parsing lost or duplicated objects.");
+        Assert(
+            manager.assetsFileList
+                .SelectMany(file => file.Objects)
+                .Select(obj => obj.m_PathID)
+                .Distinct()
+                .Count() == fileCount,
+            "Multi-worker parsing produced duplicate object IDs.");
+    }
+    finally
+    {
+        manager.Clear();
     }
 }
 
@@ -1673,5 +1825,89 @@ static void Assert(bool condition, string message)
     if (!condition)
     {
         throw new InvalidOperationException(message);
+    }
+}
+
+sealed class ParallelReadProbeStream : MemoryStream
+{
+    private static int enabled;
+    private static int activeReads;
+    private static int maximumConcurrentReads;
+
+    internal ParallelReadProbeStream(byte[] buffer)
+        : base(buffer)
+    {
+    }
+
+    internal static int MaximumConcurrentReads =>
+        Volatile.Read(ref maximumConcurrentReads);
+
+    internal static void BeginMeasurement()
+    {
+        Volatile.Write(ref activeReads, 0);
+        Volatile.Write(ref maximumConcurrentReads, 0);
+        Volatile.Write(ref enabled, 1);
+    }
+
+    internal static void EndMeasurement()
+    {
+        Volatile.Write(ref enabled, 0);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (Volatile.Read(ref enabled) == 0)
+        {
+            return base.Read(buffer, offset, count);
+        }
+
+        EnterRead();
+        try
+        {
+            Thread.Sleep(25);
+            return base.Read(buffer, offset, count);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref activeReads);
+        }
+    }
+
+    public override int Read(Span<byte> buffer)
+    {
+        if (Volatile.Read(ref enabled) == 0)
+        {
+            return base.Read(buffer);
+        }
+
+        EnterRead();
+        try
+        {
+            Thread.Sleep(25);
+            return base.Read(buffer);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref activeReads);
+        }
+    }
+
+    private static void EnterRead()
+    {
+        var current = Interlocked.Increment(ref activeReads);
+        var maximum = Volatile.Read(ref maximumConcurrentReads);
+        while (current > maximum)
+        {
+            var observed = Interlocked.CompareExchange(
+                ref maximumConcurrentReads,
+                current,
+                maximum);
+            if (observed == maximum)
+            {
+                break;
+            }
+
+            maximum = observed;
+        }
     }
 }

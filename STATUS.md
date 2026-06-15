@@ -124,3 +124,14 @@
 - 未完成事项：提交并推送 MessagePack pool exhaustion 分段兼容修正版；按同一 Debian 固定命令重新验证内存、GC、磁盘、基线输出哈希和清理；重跑 container-only/full Convert 内存门禁；所有实机标准通过后关闭 Phase 2 文档。
 - 后续注意事项：不得修改或提交用户的未跟踪 `PERF_ANALYZE_REPO.md`；Debian 最终输出必须与基线 JSON/MessagePack 哈希一致，XML 仅规范化 `filename`/`createdAt` 后比较。
 - 起止提交：`d6cd765` -> 当前工作树（进行中）。
+
+### 会话 2026-06-15-01
+
+- 本次目标：在关闭 Phase 2 前修复 CLI 长时间仅使用单个 CPU 核心的问题，使对象解析和非 FBX 导出默认使用多核，同时保留输出兼容、内存门槛和异常隔离。
+- 完成内容：已停止旧串行实现的 Debian 全量 Convert 验收重跑；确认根因是 `Program.Run`、`AssetsManager.ReadAssets`、`BuildAssetMapFile` 和 `Studio.ExportAssets` 的嵌套串行循环，原 `Task.Run(...).Wait()` 仅移动串行工作。新增默认取进程可见逻辑 CPU 数的 `--workers`，同步提高线程池最小 worker 数；普通对象解析和 AssetMap 扫描按独立 `SerializedFile` 有界并行，AssetMap 结果按原文件/对象顺序合并后再执行 CRC 字符串缓存、关系解析、过滤与 spool，保持格式兼容顺序。非 FBX 导出使用有界 worker 和按资产序号协调的输出路径预留；相同路径等待较早资产结果，失败可按串行语义复用，既有文件和 duplicate 后缀不依赖调度顺序。共享容器文件改用 `RandomAccess.Read` 定位读取，内存后备直接复制；共享资源 reader 的缓存和 seek/read 全部同步。FBX 与 MonoBehaviour 共享状态保留串行临界区，异常仍按单资产隔离，OOM 继续上抛。CLI runtime config 已启用 Server GC，并保留 concurrent GC、75% heap hard limit 和 RetainVM。
+- 修改文件/接口：新增 `CommandOptions.Workers`、`Options.Workers`、`AssetsManager.WorkerCount`、`AssetsHelper.SetWorkerCount` 和内部 `ExportPathCoordinator`；`Studio.ExportAssets` 接收 worker 数；`SharedBackingStore.ReadAt` 支持并发定位读取；`ResourceReader` 严格读满并同步共享流；更新 `README.md`、`CLAUDE.md`、`PLAN.md` 及 Core/CLI smoke。
+- 验证及指标：本地 `dotnet build AnimeStudio.sln -c Release --no-restore`、Core smoke、macOS ARM64 动态 package/runtime smoke、Linux x64 与 Windows x64 跨平台 package smoke、`git diff --check` 和活跃文件旧 TFM/桌面引用扫描均通过。新增 smoke 实际调用私有 `AssetsManager.ReadAssets`，在 4-worker/8-file fixture 中观测到超过一个并发读取并确认对象与 PathID 无丢失或重复；另覆盖 256 路磁盘切片定位读取、256 路共享资源读取、worker 下限校验、显式 worker 生效、Server GC 配置和确定性路径等待/失败复用/既有文件跳过。首次三 RID 命令因人为使用 `--no-restore` 且 assets 文件没有 RID target 直接报 `NETSDK1047`，允许 restore 后正式路径全部通过，不属于代码失败。被停止的旧实现重跑不计验收；前一次旧实现全量尝试由外部 `SIGTERM` 在 7:09:44 终止，非 OOM，已处理 27/31 个 `.chk`，GNU time 峰值 RSS 11,409,832 KiB、采样峰值 11,410,128 KiB、`oom_kill` 0 -> 0，记录保留在服务器 `attempt-sigterm-1`。
+- 问题与决策：并行度默认不得为 1；单核主机仍可正确运行，但不为其牺牲多核默认值。一个 `SerializedFile` 的可变 reader 仍只由一个 worker 使用；共享资源流必须串行 seek/read，读取完成后的转换可并行。FBX 原生库会切换进程当前目录且尚未证明可重入，因此暂不并行；其资产保持原序直到完整导出结束。`PERF_NEXT_STEP.md` 是历史规划输入，其中暂缓 Phase 2 并行化的建议已被本次用户明确要求覆盖。
+- 未完成事项：提交并推送精确候选，在 Debian 13 分别以 `--workers 1` 和默认 4 worker 采集 AssetMap/Convert 的 CPU、wall、RSS、输出与清理证据；重跑 container-only 和全量 Convert 内存门禁；全部通过后关闭 Phase 2。
+- 后续注意事项：并行化不得改变 AssetMap JSON/MessagePack 字节和 XML 规范化结果；Server GC 与并行导出可能增加驻留内存，实机必须满足 AssetMap 6,957,772 KiB、container-only 10,197,212 KiB、全量 Convert 11,474,792 KiB 的既有上限；不得修改或提交用户的未跟踪 `PERF_ANALYZE_REPO.md`。
+- 起止提交：`2f7e87b` -> 当前工作树（进行中）。

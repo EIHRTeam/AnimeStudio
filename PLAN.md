@@ -58,7 +58,29 @@ preserving existing schemas, filter order, and output compatibility.
 - Preserve current type, name, and container matching behavior and source
   ordering.
 
-## 6. Automated Acceptance
+## 6. Bounded Multi-Core Execution
+
+- Add a CLI worker-count option whose default is the process-visible logical
+  CPU count. Values below one are rejected; single-core hosts remain
+  functional but are not the optimization target.
+- Parse objects in parallel across independent `SerializedFile` instances.
+  Never read one serialized file's mutable stream from multiple workers.
+- Scan AssetMap objects in parallel by serialized file, then merge per-file
+  results in the original file/object order before applying the compatibility
+  string cache, relationship resolution, filters, and spool writes.
+- Export non-FBX assets with bounded workers. Reserve primary output paths in
+  original asset order so duplicate handling and deterministic outputs do not
+  depend on scheduler order.
+- Synchronize shared resource stream reads so seek/read operations cannot
+  overlap. Keep FBX native export in an explicit serial critical section until
+  the native library is proven reentrant.
+- Use Server GC for the batch CLI and retain the existing heap hard limit.
+  Debian acceptance must prove that multi-core GC and workers do not exceed
+  the established RSS gates.
+- Remove `Task.Run(...).Wait()` wrappers that only move serial work to another
+  thread.
+
+## 7. Automated Acceptance
 
 - Synthetic large-map tests prove entries are not retained in a global list.
 - XML and JSON structures remain equivalent to legacy fixtures.
@@ -70,9 +92,14 @@ preserving existing schemas, filter order, and output compatibility.
   no spool or lock residue.
 - `dotnet build AnimeStudio.sln -c Release`, Core smoke, and all three RID
   package smoke checks pass.
+- Smoke coverage proves worker option validation, deterministic output-path
+  reservation, shared resource-reader correctness under concurrency, and
+  multi-worker object parsing without duplicate or missing objects.
+- Published runtime configuration enables Server GC while preserving
+  concurrent GC, the 75 percent heap hard limit, and retained VM policy.
 - `git diff --check` and active-file legacy reference scans pass.
 
-## 7. Debian Acceptance
+## 8. Debian Acceptance
 
 - Push the exact validation commit and check it out on the authorized Debian
   13 server.
@@ -81,5 +108,9 @@ preserving existing schemas, filter order, and output compatibility.
 - Require lower peak retained memory than the baseline without increasing the
   existing container-only or full Convert memory regressions.
 - Preserve output compatibility for every enabled map format.
+- Capture process CPU utilization during AssetMap object scanning and Convert
+  export. Multi-worker CPU-bound stages must exceed one-core utilization and
+  improve wall time against the fixed serial command without violating RSS,
+  cleanup, OOM, or output gates.
 
 Phase 2 is complete only when every automated and Debian criterion passes.

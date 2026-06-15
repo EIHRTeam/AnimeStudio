@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
+using System.Threading;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
 using static AnimeStudio.CLI.Studio;
@@ -51,6 +51,16 @@ namespace AnimeStudio.CLI
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
                 AssetsHelper.SetLargeObjectHeapCompactionInterval(4);
+                AssetsHelper.SetWorkerCount(o.Workers);
+                ThreadPool.GetMinThreads(
+                    out var minimumWorkerThreads,
+                    out var minimumCompletionPortThreads);
+                if (minimumWorkerThreads < o.Workers)
+                {
+                    ThreadPool.SetMinThreads(
+                        o.Workers,
+                        minimumCompletionPortThreads);
+                }
                 var containerStorageOptions = Settings.Default.GetContainerStorageOptions();
                 AssetsHelper.SetContainerStorageOptions(containerStorageOptions);
 
@@ -139,7 +149,11 @@ namespace AnimeStudio.CLI
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
                 assetsManager.LargeObjectHeapCompactionInterval = 4;
+                assetsManager.WorkerCount = o.Workers;
                 assetsManager.ContainerStorageOptions = containerStorageOptions;
+                Logger.Info(
+                    $"Using {o.Workers} workers across " +
+                    $"{Environment.ProcessorCount} logical processors.");
                 o.Output.Create();
 
                 if (o.Key != default)
@@ -186,12 +200,16 @@ namespace AnimeStudio.CLI
                     }
                     else
                     {
-                        Task.Run(() => AssetsHelper.BuildAssetMap(files, o.MapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                        AssetsHelper.BuildAssetMap(files, o.MapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)
+                            .GetAwaiter()
+                            .GetResult();
                     }
                 }
                 if (o.MapOp.HasFlag(MapOpType.Both))
                 {
-                    Task.Run(() => AssetsHelper.BuildBoth(files, o.MapName, o.Input.FullName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                    AssetsHelper.BuildBoth(files, o.MapName, o.Input.FullName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)
+                        .GetAwaiter()
+                        .GetResult();
                 }
                 if (o.MapOp.Equals(MapOpType.None) || o.MapOp.HasFlag(MapOpType.Load))
                 {
@@ -211,7 +229,12 @@ namespace AnimeStudio.CLI
                             if (assetsManager.assetsFileList.Count > 0)
                             {
                                 BuildAssetData(classTypeFilter, o.NameFilter, o.ContainerFilter, ref i);
-                                ExportAssets(o.Output.FullName, exportableAssets, o.GroupAssetsType, o.AssetExportType);
+                                ExportAssets(
+                                    o.Output.FullName,
+                                    exportableAssets,
+                                    o.GroupAssetsType,
+                                    o.AssetExportType,
+                                    o.Workers);
                             }
                         }
                         catch (OutOfMemoryException)

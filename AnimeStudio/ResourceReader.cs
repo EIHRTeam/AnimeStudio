@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
 
 namespace AnimeStudio
 {
@@ -34,7 +35,9 @@ namespace AnimeStudio
             if (needSearch)
             {
                 var resourceFileName = Path.GetFileName(path);
-                if (assetsFile.assetsManager.resourceFileReaders.TryGetValue(resourceFileName, out reader))
+                if (assetsFile.assetsManager.TryGetResourceFileReader(
+                    resourceFileName,
+                    out reader))
                 {
                     needSearch = false;
                     return reader;
@@ -52,8 +55,9 @@ namespace AnimeStudio
                 if (File.Exists(resourceFilePath))
                 {
                     needSearch = false;
-                    reader = new BinaryReader(File.OpenRead(resourceFilePath));
-                    assetsFile.assetsManager.resourceFileReaders.TryAdd(resourceFileName, reader);
+                    reader = assetsFile.assetsManager.GetOrAddResourceFileReader(
+                        resourceFileName,
+                        () => new BinaryReader(File.OpenRead(resourceFilePath)));
                     return reader;
                 }
                 throw new FileNotFoundException($"Can't find the resource file {resourceFileName}");
@@ -67,23 +71,42 @@ namespace AnimeStudio
         public byte[] GetData()
         {
             var binaryReader = GetReader();
-            binaryReader.BaseStream.Position = offset;
-            return binaryReader.ReadBytes((int)size);
+            lock (binaryReader)
+            {
+                binaryReader.BaseStream.Position = offset;
+                var data = GC.AllocateUninitializedArray<byte>(
+                    checked((int)size));
+                binaryReader.BaseStream.ReadExactly(data);
+                return data;
+            }
         }
 
         public void GetData(byte[] buff)
         {
+            ArgumentNullException.ThrowIfNull(buff);
+            if (buff.Length < size)
+            {
+                throw new ArgumentException(
+                    "The destination buffer is smaller than the resource.",
+                    nameof(buff));
+            }
+
             var binaryReader = GetReader();
-            binaryReader.BaseStream.Position = offset;
-            binaryReader.Read(buff, 0, (int)size);
+            lock (binaryReader)
+            {
+                binaryReader.BaseStream.Position = offset;
+                binaryReader.BaseStream.ReadExactly(
+                    buff.AsSpan(0, checked((int)size)));
+            }
         }
 
         public void WriteData(string path)
         {
             var binaryReader = GetReader();
-            binaryReader.BaseStream.Position = offset;
-            using (var writer = File.OpenWrite(path))
+            lock (binaryReader)
             {
+                binaryReader.BaseStream.Position = offset;
+                using var writer = File.OpenWrite(path);
                 binaryReader.BaseStream.CopyTo(writer, size);
             }
         }

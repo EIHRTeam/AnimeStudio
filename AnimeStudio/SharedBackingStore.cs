@@ -9,6 +9,9 @@ namespace AnimeStudio
     {
         private readonly object sync = new();
         private readonly Stream stream;
+        private readonly FileStream fileStream;
+        private readonly byte[] memoryBuffer;
+        private readonly int memoryBufferOffset;
         private readonly long expectedLength;
         private readonly string temporaryPath;
         private readonly long memoryReservation;
@@ -27,6 +30,13 @@ namespace AnimeStudio
             ContainerStorageManager manager)
         {
             this.stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            fileStream = stream as FileStream;
+            if (stream is MemoryStream memoryStream
+                && memoryStream.TryGetBuffer(out var memorySegment))
+            {
+                memoryBuffer = memorySegment.Array;
+                memoryBufferOffset = memorySegment.Offset;
+            }
             this.expectedLength = expectedLength;
             this.temporaryPath = temporaryPath;
             this.memoryReservation = memoryReservation;
@@ -124,14 +134,57 @@ namespace AnimeStudio
 
         internal int ReadAt(long absoluteOffset, Span<byte> buffer)
         {
+            if (absoluteOffset < 0 || absoluteOffset > expectedLength)
+            {
+                throw new ArgumentOutOfRangeException(nameof(absoluteOffset));
+            }
+
             lock (sync)
             {
                 ThrowIfBackingDisposed();
+            }
+
+            var available = expectedLength - absoluteOffset;
+            var count = (int)Math.Min(buffer.Length, available);
+            if (count == 0)
+            {
+                return 0;
+            }
+
+            if (fileStream != null)
+            {
+                var totalRead = 0;
+                while (totalRead < count)
+                {
+                    var bytesRead = RandomAccess.Read(
+                        fileStream.SafeFileHandle,
+                        buffer.Slice(totalRead, count - totalRead),
+                        absoluteOffset + totalRead);
+                    if (bytesRead == 0)
+                    {
+                        break;
+                    }
+                    totalRead += bytesRead;
+                }
+                return totalRead;
+            }
+
+            if (memoryBuffer != null)
+            {
+                memoryBuffer.AsSpan(
+                        checked(memoryBufferOffset + checked((int)absoluteOffset)),
+                        count)
+                    .CopyTo(buffer);
+                return count;
+            }
+
+            lock (sync)
+            {
                 var previousPosition = stream.Position;
                 try
                 {
                     stream.Position = absoluteOffset;
-                    return stream.Read(buffer);
+                    return stream.Read(buffer[..count]);
                 }
                 finally
                 {

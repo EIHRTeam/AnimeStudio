@@ -13,8 +13,30 @@ namespace AnimeStudio.CLI
 {
     internal static class Exporter
     {
+        private static readonly object FbxExportSync = new();
+        private static readonly object MonoBehaviourExportSync = new();
+
+        [ThreadStatic]
+        private static ExportReservationScope currentReservation;
         private static int fbxUnavailableWarningLogged;
         private static int optimizedAnimatorWarningLogged;
+
+        internal static IDisposable BeginAssetExport(
+            ExportPathCoordinator coordinator,
+            int ordinal,
+            bool holdOrderUntilDispose)
+        {
+            if (currentReservation != null)
+            {
+                throw new InvalidOperationException(
+                    "Nested asset export reservation scopes are not supported.");
+            }
+
+            currentReservation = coordinator.CreateScope(
+                ordinal,
+                holdOrderUntilDispose);
+            return new ReservationScopeReset(currentReservation);
+        }
 
         public static bool ExportTexture2D(AssetItem item, string exportPath)
         {
@@ -402,6 +424,16 @@ namespace AnimeStudio.CLI
         private static bool TryExportFile(string dir, AssetItem item, string extension, out string fullPath)
         {
             var fileName = FixFileName(item.Text);
+            if (currentReservation != null)
+            {
+                return currentReservation.TryReserveFile(
+                    dir,
+                    fileName,
+                    extension,
+                    Properties.Settings.Default.allowDuplicates,
+                    out fullPath);
+            }
+
             fullPath = Path.Combine(dir, $"{fileName}{extension}");
             if (!File.Exists(fullPath))
             {
@@ -425,6 +457,15 @@ namespace AnimeStudio.CLI
         private static bool TryExportFolder(string dir, AssetItem item, out string fullPath)
         {
             var fileName = FixFileName(item.Text);
+            if (currentReservation != null)
+            {
+                return currentReservation.TryReserveDirectory(
+                    dir,
+                    fileName,
+                    Properties.Settings.Default.allowDuplicates,
+                    out fullPath);
+            }
+
             fullPath = Path.Combine(dir, fileName);
             if (!Directory.Exists(fullPath))
             {
@@ -657,7 +698,10 @@ namespace AnimeStudio.CLI
             switch (item.Type)
             {
                 case ClassIDType.GameObject:
-                    return ExportGameObject(item, exportPath);
+                    lock (FbxExportSync)
+                    {
+                        return ExportGameObject(item, exportPath);
+                    }
                 case ClassIDType.Texture2D:
                     return ExportTexture2D(item, exportPath);
                 case ClassIDType.AudioClip:
@@ -667,7 +711,10 @@ namespace AnimeStudio.CLI
                 case ClassIDType.TextAsset:
                     return ExportTextAsset(item, exportPath);
                 case ClassIDType.MonoBehaviour:
-                    return ExportMonoBehaviour(item, exportPath);
+                    lock (MonoBehaviourExportSync)
+                    {
+                        return ExportMonoBehaviour(item, exportPath);
+                    }
                 case ClassIDType.Font:
                     return ExportFont(item, exportPath);
                 case ClassIDType.Mesh:
@@ -679,7 +726,10 @@ namespace AnimeStudio.CLI
                 case ClassIDType.Sprite:
                     return ExportSprite(item, exportPath);
                 case ClassIDType.Animator:
-                    return ExportAnimator(item, exportPath);
+                    lock (FbxExportSync)
+                    {
+                        return ExportAnimator(item, exportPath);
+                    }
                 case ClassIDType.AnimationClip:
                     return ExportAnimationClip(item, exportPath);
                 case ClassIDType.MiHoYoBinData:
@@ -707,6 +757,34 @@ namespace AnimeStudio.CLI
         {
             if (str.Length >= 260) return Path.GetRandomFileName();
             return Path.GetInvalidFileNameChars().Aggregate(str, (current, c) => current.Replace(c, '_'));
+        }
+
+        private sealed class ReservationScopeReset : IDisposable
+        {
+            private ExportReservationScope scope;
+
+            internal ReservationScopeReset(ExportReservationScope scope)
+            {
+                this.scope = scope;
+            }
+
+            public void Dispose()
+            {
+                var reservation = Interlocked.Exchange(ref scope, null);
+                if (reservation == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    reservation.Dispose();
+                }
+                finally
+                {
+                    currentReservation = null;
+                }
+            }
         }
     }
 }

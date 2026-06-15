@@ -5,6 +5,9 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using static AnimeStudio.CLI.Exporter;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace AnimeStudio.CLI
 {
@@ -524,77 +527,90 @@ namespace AnimeStudio.CLI
             }
         }
 
-        public static void ExportAssets(string savePath, List<AssetItem> toExportAssets, AssetGroupOption assetGroupOption, ExportType exportType)
+        public static void ExportAssets(
+            string savePath,
+            List<AssetItem> toExportAssets,
+            AssetGroupOption assetGroupOption,
+            ExportType exportType,
+            int workerCount)
         {
+            if (workerCount < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(workerCount));
+            }
+
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
-            foreach (var asset in toExportAssets)
+            var nextAssetIndex = -1;
+            var coordinator = new ExportPathCoordinator();
+            var activeWorkers = Math.Min(workerCount, toExportCount);
+            try
             {
-                string exportPath;
-                switch (assetGroupOption)
-                {
-                    case AssetGroupOption.ByType: //type name
-                        exportPath = Path.Combine(savePath, asset.TypeString);
-                        break;
-                    case AssetGroupOption.ByContainer: //container path
-                        if (!string.IsNullOrEmpty(asset.Container))
-                        {
-                            exportPath = Path.HasExtension(asset.Container) ? Path.Combine(savePath, Path.GetDirectoryName(asset.Container)) : Path.Combine(savePath, asset.Container);
-                        }
-                        else
-                        {
-                            exportPath = Path.Combine(savePath, asset.TypeString);
-                        }
-                        break;
-                    case AssetGroupOption.BySource: //source file
-                        if (string.IsNullOrEmpty(asset.SourceFile.originalPath))
-                        {
-                            exportPath = Path.Combine(savePath, asset.SourceFile.fileName + "_export");
-                        }
-                        else
-                        {
-                            exportPath = Path.Combine(savePath, Path.GetFileName(asset.SourceFile.originalPath) + "_export", asset.SourceFile.fileName);
-                        }
-                        break;
-                    default:
-                        exportPath = savePath;
-                        break;
-                }
-                Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
-                try
-                {
-                    switch (exportType)
+                Parallel.For(
+                    0,
+                    activeWorkers,
+                    new ParallelOptions
                     {
-                        case ExportType.Raw:
-                            if (ExportRawFile(asset, exportPath))
+                        MaxDegreeOfParallelism = activeWorkers
+                    },
+                    _ =>
+                    {
+                        while (true)
+                        {
+                            var assetIndex =
+                                Interlocked.Increment(ref nextAssetIndex);
+                            if (assetIndex >= toExportCount)
                             {
-                                exportedCount++;
+                                return;
                             }
-                            break;
-                        case ExportType.Dump:
-                            if (ExportDumpFile(asset, exportPath))
+
+                            var asset = toExportAssets[assetIndex];
+                            var holdOrderUntilDispose =
+                                exportType == ExportType.Convert
+                                && asset.Type is ClassIDType.GameObject
+                                    or ClassIDType.Animator;
+                            using var reservation = BeginAssetExport(
+                                coordinator,
+                                assetIndex,
+                                holdOrderUntilDispose);
+                            var exportPath = GetExportPath(
+                                savePath,
+                                asset,
+                                assetGroupOption);
+                            Logger.Info(
+                                $"[{assetIndex}/{toExportCount}] Exporting " +
+                                $"{asset.TypeString}: {asset.Text}");
+                            try
                             {
-                                exportedCount++;
+                                if (ExportAsset(
+                                    asset,
+                                    exportPath,
+                                    exportType))
+                                {
+                                    Interlocked.Increment(ref exportedCount);
+                                }
                             }
-                            break;
-                        case ExportType.Convert:
-                            if (ExportConvertFile(asset, exportPath))
+                            catch (Exception ex)
+                                when (ex is not OutOfMemoryException)
                             {
-                                exportedCount++;
+                                Logger.Error(
+                                    $"Export {asset.Type}:{asset.Text} error\r\n" +
+                                    $"{ex.Message}\r\n{ex.StackTrace}");
                             }
-                            break;
-                        case ExportType.JSON:
-                            if (ExportJSONFile(asset, exportPath))
-                            {
-                                exportedCount++;
-                            }
-                            break;
-                    }
-                }
-                catch (Exception ex) when (ex is not OutOfMemoryException)
+                        }
+                    });
+            }
+            catch (AggregateException exception)
+            {
+                var flattened = exception.Flatten();
+                var outOfMemory = flattened.InnerExceptions
+                    .FirstOrDefault(inner => inner is OutOfMemoryException);
+                if (outOfMemory != null)
                 {
-                    Logger.Error($"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}");
+                    ExceptionDispatchInfo.Capture(outOfMemory).Throw();
                 }
+
+                throw;
             }
 
             var statusText = exportedCount == 0 ? "Nothing exported." : $"Finished exporting {exportedCount} assets.";
@@ -605,6 +621,54 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+        }
+
+        private static string GetExportPath(
+            string savePath,
+            AssetItem asset,
+            AssetGroupOption assetGroupOption)
+        {
+            return assetGroupOption switch
+            {
+                AssetGroupOption.ByType =>
+                    Path.Combine(savePath, asset.TypeString),
+                AssetGroupOption.ByContainer
+                    when !string.IsNullOrEmpty(asset.Container) =>
+                    Path.HasExtension(asset.Container)
+                        ? Path.Combine(
+                            savePath,
+                            Path.GetDirectoryName(asset.Container))
+                        : Path.Combine(savePath, asset.Container),
+                AssetGroupOption.ByContainer =>
+                    Path.Combine(savePath, asset.TypeString),
+                AssetGroupOption.BySource
+                    when string.IsNullOrEmpty(asset.SourceFile.originalPath) =>
+                    Path.Combine(
+                        savePath,
+                        asset.SourceFile.fileName + "_export"),
+                AssetGroupOption.BySource =>
+                    Path.Combine(
+                        savePath,
+                        Path.GetFileName(asset.SourceFile.originalPath)
+                            + "_export",
+                        asset.SourceFile.fileName),
+                _ => savePath
+            };
+        }
+
+        private static bool ExportAsset(
+            AssetItem asset,
+            string exportPath,
+            ExportType exportType)
+        {
+            return exportType switch
+            {
+                ExportType.Raw => ExportRawFile(asset, exportPath),
+                ExportType.Dump => ExportDumpFile(asset, exportPath),
+                ExportType.Convert => ExportConvertFile(asset, exportPath),
+                ExportType.JSON => ExportJSONFile(asset, exportPath),
+                _ => false
+            };
         }
 
         public static TypeTree MonoBehaviourToTypeTree(MonoBehaviour m_MonoBehaviour)

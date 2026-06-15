@@ -18,6 +18,8 @@ namespace AnimeStudio
 
         public long Offset { get; set; } = -1;
 
+        internal bool CacheName { get; set; }
+
         internal static AssetMapEntryRecord FromAssetEntry(AssetEntry entry)
         {
             ArgumentNullException.ThrowIfNull(entry);

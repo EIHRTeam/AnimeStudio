@@ -5,8 +5,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Runtime;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using static AnimeStudio.ImportHelper;
 
 namespace AnimeStudio
@@ -18,6 +20,7 @@ namespace AnimeStudio
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
         public int LargeObjectHeapCompactionInterval { get; set; }
+        public int WorkerCount { get; set; } = Math.Max(1, Environment.ProcessorCount);
         public ContainerStorageOptions ContainerStorageOptions { get; set; } = new ContainerStorageOptions();
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
@@ -25,6 +28,7 @@ namespace AnimeStudio
 
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
+        private readonly object resourceFileReadersSync = new();
 
         internal List<string> importFiles = new List<string>();
         internal HashSet<string> importFilesHash = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -70,6 +74,43 @@ namespace AnimeStudio
         private ContainerStorageManager GetContainerStorageManager()
         {
             return containerStorageManager ??= new ContainerStorageManager(ContainerStorageOptions);
+        }
+
+        internal BinaryReader GetOrAddResourceFileReader(
+            string resourceFileName,
+            Func<BinaryReader> readerFactory)
+        {
+            lock (resourceFileReadersSync)
+            {
+                if (resourceFileReaders.TryGetValue(resourceFileName, out var reader))
+                {
+                    return reader;
+                }
+
+                reader = readerFactory();
+                resourceFileReaders.Add(resourceFileName, reader);
+                return reader;
+            }
+        }
+
+        internal bool TryGetResourceFileReader(
+            string resourceFileName,
+            out BinaryReader reader)
+        {
+            lock (resourceFileReadersSync)
+            {
+                return resourceFileReaders.TryGetValue(resourceFileName, out reader);
+            }
+        }
+
+        internal bool TryAddResourceFileReader(
+            string resourceFileName,
+            BinaryReader reader)
+        {
+            lock (resourceFileReadersSync)
+            {
+                return resourceFileReaders.TryAdd(resourceFileName, reader);
+            }
         }
 
         public void LoadFiles(params string[] files)
@@ -318,7 +359,7 @@ namespace AnimeStudio
                 catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     Logger.Error($"Error while reading assets file {reader.FullPath} from {Path.GetFileName(originalPath)}", e);
-                    if (!resourceFileReaders.TryAdd(reader.FileName, reader))
+                    if (!TryAddResourceFileReader(reader.FileName, reader))
                     {
                         reader.Dispose();
                     }
@@ -354,7 +395,7 @@ namespace AnimeStudio
                             break;
                         case FileType.ResourceFile:
                             Logger.Verbose("Caching resource stream");
-                            if (!resourceFileReaders.TryAdd(file.fileName, subReader))
+                            if (!TryAddResourceFileReader(file.fileName, subReader))
                             {
                                 subReader.Dispose();
                             }
@@ -450,7 +491,7 @@ namespace AnimeStudio
                             {
                                 entryReader.Position = 0;
                                 Logger.Verbose("Caching resource file");
-                                if (!resourceFileReaders.TryAdd(entry.Name, entryReader))
+                                if (!TryAddResourceFileReader(entry.Name, entryReader))
                                 {
                                     entryReader.Dispose();
                                 }
@@ -585,7 +626,7 @@ namespace AnimeStudio
                         else
                         {
                             Logger.Verbose("Caching resource stream");
-                            if (!resourceFileReaders.TryAdd(innerFile.fileName, cabReader))
+                            if (!TryAddResourceFileReader(innerFile.fileName, cabReader))
                             {
                                 cabReader.Dispose();
                             }
@@ -671,11 +712,14 @@ namespace AnimeStudio
             }
             assetsFileList.Clear();
 
-            foreach (var resourceFileReader in resourceFileReaders)
+            lock (resourceFileReadersSync)
             {
-                resourceFileReader.Value.Close();
+                foreach (var resourceFileReader in resourceFileReaders)
+                {
+                    resourceFileReader.Value.Close();
+                }
+                resourceFileReaders.Clear();
             }
-            resourceFileReaders.Clear();
 
             containerStorageManager?.Dispose();
             containerStorageManager = null;
@@ -708,69 +752,100 @@ namespace AnimeStudio
             var progressCount = assetsFileList.Sum(x => x.m_Objects.Count);
             int i = 0;
             Progress.Reset();
-            foreach (var assetsFile in assetsFileList)
+            try
             {
-                foreach (var objectInfo in assetsFile.m_Objects)
-                {
-                    if (tokenSource.IsCancellationRequested)
+                Parallel.ForEach(
+                    assetsFileList,
+                    new ParallelOptions
                     {
-                        Logger.Info("Reading assets has been cancelled !!");
-                        return;
-                    }
-                    var objectReader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
-                    try
+                        MaxDegreeOfParallelism = WorkerCount,
+                        CancellationToken = tokenSource.Token
+                    },
+                    assetsFile =>
                     {
-                        Object obj = objectReader.type switch
+                        foreach (var objectInfo in assetsFile.m_Objects)
                         {
-                            ClassIDType.Animation when ClassIDType.Animation.CanParse() => new Animation(objectReader),
-                            ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanParse() => new AnimationClip(objectReader),
-                            ClassIDType.Animator when ClassIDType.Animator.CanParse() => new Animator(objectReader),
-                            ClassIDType.AnimatorController when ClassIDType.AnimatorController.CanParse() => new AnimatorController(objectReader),
-                            ClassIDType.AnimatorOverrideController when ClassIDType.AnimatorOverrideController.CanParse() => new AnimatorOverrideController(objectReader),
-                            ClassIDType.AssetBundle when ClassIDType.AssetBundle.CanParse() => new AssetBundle(objectReader),
-                            ClassIDType.AudioClip when ClassIDType.AudioClip.CanParse() => new AudioClip(objectReader),
-                            ClassIDType.Avatar when ClassIDType.Avatar.CanParse() => new Avatar(objectReader),
-                            ClassIDType.Font when ClassIDType.Font.CanParse() => new Font(objectReader),
-                            ClassIDType.GameObject when ClassIDType.GameObject.CanParse() => new GameObject(objectReader),
-                            ClassIDType.IndexObject when ClassIDType.IndexObject.CanParse() => new IndexObject(objectReader),
-                            ClassIDType.Material when ClassIDType.Material.CanParse() => new Material(objectReader),
-                            ClassIDType.Mesh when ClassIDType.Mesh.CanParse() => new Mesh(objectReader),
-                            ClassIDType.MeshFilter when ClassIDType.MeshFilter.CanParse() => new MeshFilter(objectReader),
-                            ClassIDType.MeshRenderer when ClassIDType.MeshRenderer.CanParse() => new MeshRenderer(objectReader),
-                            ClassIDType.MiHoYoBinData when ClassIDType.MiHoYoBinData.CanParse() => new MiHoYoBinData(objectReader),
-                            ClassIDType.MonoBehaviour when ClassIDType.MonoBehaviour.CanParse() => new MonoBehaviour(objectReader),
-                            ClassIDType.MonoScript when ClassIDType.MonoScript.CanParse() => new MonoScript(objectReader),
-                            ClassIDType.MovieTexture when ClassIDType.MovieTexture.CanParse() => new MovieTexture(objectReader),
-                            ClassIDType.PlayerSettings when ClassIDType.PlayerSettings.CanParse() => new PlayerSettings(objectReader),
-                            ClassIDType.RectTransform when ClassIDType.RectTransform.CanParse() => new RectTransform(objectReader),
-                            ClassIDType.Shader when ClassIDType.Shader.CanParse() => new Shader(objectReader),
-                            ClassIDType.SkinnedMeshRenderer when ClassIDType.SkinnedMeshRenderer.CanParse() => new SkinnedMeshRenderer(objectReader),
-                            ClassIDType.Sprite when ClassIDType.Sprite.CanParse() => new Sprite(objectReader),
-                            ClassIDType.SpriteAtlas when ClassIDType.SpriteAtlas.CanParse() => new SpriteAtlas(objectReader),
-                            ClassIDType.TextAsset when ClassIDType.TextAsset.CanParse() => new TextAsset(objectReader),
-                            ClassIDType.Texture2D when ClassIDType.Texture2D.CanParse() => new Texture2D(objectReader),
-                            ClassIDType.Transform when ClassIDType.Transform.CanParse() => new Transform(objectReader),
-                            ClassIDType.VideoClip when ClassIDType.VideoClip.CanParse() => new VideoClip(objectReader),
-                            ClassIDType.ResourceManager when ClassIDType.ResourceManager.CanParse() => new ResourceManager(objectReader),
-                            ClassIDType.NapAssetBundleIndexAsset when ClassIDType.NapAssetBundleIndexAsset.CanParse() => new NapAssetBundleIndexAsset(objectReader),
-                            _ => new Object(objectReader),
-                        };
-                        assetsFile.AddObject(obj);
-                    }
-                    catch (Exception e) when (e is not OutOfMemoryException)
-                    {
-                        var sb = new StringBuilder();
-                        sb.AppendLine("Unable to load object")
-                            .AppendLine($"Assets {assetsFile.fileName}")
-                            .AppendLine($"Path {assetsFile.originalPath}")
-                            .AppendLine($"Type {objectReader.type}")
-                            .AppendLine($"PathID {objectInfo.m_PathID}")
-                            .Append(e);
-                        Logger.Error(sb.ToString());
-                    }
-
-                    Progress.Report(++i, progressCount);
+                            tokenSource.Token.ThrowIfCancellationRequested();
+                            ReadAssetObject(assetsFile, objectInfo);
+                            Progress.Report(
+                                Interlocked.Increment(ref i),
+                                progressCount);
+                        }
+                    });
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.Info("Reading assets has been cancelled !!");
+            }
+            catch (AggregateException exception)
+            {
+                var flattened = exception.Flatten();
+                var outOfMemory = flattened.InnerExceptions
+                    .FirstOrDefault(inner => inner is OutOfMemoryException);
+                if (outOfMemory != null)
+                {
+                    ExceptionDispatchInfo.Capture(outOfMemory).Throw();
                 }
+
+                throw;
+            }
+        }
+
+        private void ReadAssetObject(
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo)
+        {
+            var objectReader =
+                new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
+            try
+            {
+                Object obj = objectReader.type switch
+                {
+                    ClassIDType.Animation when ClassIDType.Animation.CanParse() => new Animation(objectReader),
+                    ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanParse() => new AnimationClip(objectReader),
+                    ClassIDType.Animator when ClassIDType.Animator.CanParse() => new Animator(objectReader),
+                    ClassIDType.AnimatorController when ClassIDType.AnimatorController.CanParse() => new AnimatorController(objectReader),
+                    ClassIDType.AnimatorOverrideController when ClassIDType.AnimatorOverrideController.CanParse() => new AnimatorOverrideController(objectReader),
+                    ClassIDType.AssetBundle when ClassIDType.AssetBundle.CanParse() => new AssetBundle(objectReader),
+                    ClassIDType.AudioClip when ClassIDType.AudioClip.CanParse() => new AudioClip(objectReader),
+                    ClassIDType.Avatar when ClassIDType.Avatar.CanParse() => new Avatar(objectReader),
+                    ClassIDType.Font when ClassIDType.Font.CanParse() => new Font(objectReader),
+                    ClassIDType.GameObject when ClassIDType.GameObject.CanParse() => new GameObject(objectReader),
+                    ClassIDType.IndexObject when ClassIDType.IndexObject.CanParse() => new IndexObject(objectReader),
+                    ClassIDType.Material when ClassIDType.Material.CanParse() => new Material(objectReader),
+                    ClassIDType.Mesh when ClassIDType.Mesh.CanParse() => new Mesh(objectReader),
+                    ClassIDType.MeshFilter when ClassIDType.MeshFilter.CanParse() => new MeshFilter(objectReader),
+                    ClassIDType.MeshRenderer when ClassIDType.MeshRenderer.CanParse() => new MeshRenderer(objectReader),
+                    ClassIDType.MiHoYoBinData when ClassIDType.MiHoYoBinData.CanParse() => new MiHoYoBinData(objectReader),
+                    ClassIDType.MonoBehaviour when ClassIDType.MonoBehaviour.CanParse() => new MonoBehaviour(objectReader),
+                    ClassIDType.MonoScript when ClassIDType.MonoScript.CanParse() => new MonoScript(objectReader),
+                    ClassIDType.MovieTexture when ClassIDType.MovieTexture.CanParse() => new MovieTexture(objectReader),
+                    ClassIDType.PlayerSettings when ClassIDType.PlayerSettings.CanParse() => new PlayerSettings(objectReader),
+                    ClassIDType.RectTransform when ClassIDType.RectTransform.CanParse() => new RectTransform(objectReader),
+                    ClassIDType.Shader when ClassIDType.Shader.CanParse() => new Shader(objectReader),
+                    ClassIDType.SkinnedMeshRenderer when ClassIDType.SkinnedMeshRenderer.CanParse() => new SkinnedMeshRenderer(objectReader),
+                    ClassIDType.Sprite when ClassIDType.Sprite.CanParse() => new Sprite(objectReader),
+                    ClassIDType.SpriteAtlas when ClassIDType.SpriteAtlas.CanParse() => new SpriteAtlas(objectReader),
+                    ClassIDType.TextAsset when ClassIDType.TextAsset.CanParse() => new TextAsset(objectReader),
+                    ClassIDType.Texture2D when ClassIDType.Texture2D.CanParse() => new Texture2D(objectReader),
+                    ClassIDType.Transform when ClassIDType.Transform.CanParse() => new Transform(objectReader),
+                    ClassIDType.VideoClip when ClassIDType.VideoClip.CanParse() => new VideoClip(objectReader),
+                    ClassIDType.ResourceManager when ClassIDType.ResourceManager.CanParse() => new ResourceManager(objectReader),
+                    ClassIDType.NapAssetBundleIndexAsset when ClassIDType.NapAssetBundleIndexAsset.CanParse() => new NapAssetBundleIndexAsset(objectReader),
+                    _ => new Object(objectReader),
+                };
+                assetsFile.AddObject(obj);
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("Unable to load object")
+                    .AppendLine($"Assets {assetsFile.fileName}")
+                    .AppendLine($"Path {assetsFile.originalPath}")
+                    .AppendLine($"Type {objectReader.type}")
+                    .AppendLine($"PathID {objectInfo.m_PathID}")
+                    .Append(e);
+                Logger.Error(sb.ToString());
             }
         }
 

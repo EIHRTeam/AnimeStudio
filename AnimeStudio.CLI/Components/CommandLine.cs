@@ -33,6 +33,7 @@ namespace AnimeStudio.CLI
             rootCommand.Options.Add(options.UnityVersion);
             rootCommand.Options.Add(options.GroupAssetsType);
             rootCommand.Options.Add(options.AssetExportType);
+            rootCommand.Options.Add(options.Workers);
             rootCommand.Options.Add(options.Key);
             rootCommand.Options.Add(options.AIFile);
             rootCommand.Options.Add(options.DummyDllFolder);
@@ -58,6 +59,7 @@ namespace AnimeStudio.CLI
         public string UnityVersion { get; set; }
         public AssetGroupOption GroupAssetsType { get; set; }
         public ExportType AssetExportType { get; set; }
+        public int Workers { get; set; }
         public byte Key { get; set; }
         public FileInfo AIFile { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
@@ -79,6 +81,7 @@ namespace AnimeStudio.CLI
         public readonly Option<string> UnityVersion;
         public readonly Option<AssetGroupOption> GroupAssetsType;
         public readonly Option<ExportType> AssetExportType;
+        public readonly Option<int> Workers;
         public readonly Option<byte> Key;
         public readonly Option<FileInfo> AIFile;
         public readonly Option<DirectoryInfo> DummyDllFolder;
@@ -146,6 +149,11 @@ namespace AnimeStudio.CLI
                 Description = "Specify how assets should be exported.",
                 DefaultValueFactory = _ => ExportType.Convert
             };
+            Workers = new Option<int>("--workers")
+            {
+                Description = "Maximum parsing and export workers. Defaults to the logical CPU count.",
+                DefaultValueFactory = _ => Environment.ProcessorCount
+            };
             Key = new Option<byte>("--key")
             {
                 Description = "XOR key to decrypt MiHoYoBinData.",
@@ -172,6 +180,13 @@ namespace AnimeStudio.CLI
             TypeFilter.Validators.Add(ValidateNonEmpty);
             NameFilter.Validators.Add(ValidateNonEmpty);
             ContainerFilter.Validators.Add(ValidateNonEmpty);
+            Workers.Validators.Add(result =>
+            {
+                if (result.GetValueOrDefault<int>() < 1)
+                {
+                    result.AddError("--workers must be at least 1.");
+                }
+            });
             Key.Validators.Add(ValidateKey);
 
             GameName.AcceptOnlyFromAmong(GameManager.GetGameNames());
@@ -196,6 +211,7 @@ namespace AnimeStudio.CLI
                 UnityVersion = parseResult.GetValue(UnityVersion),
                 GroupAssetsType = parseResult.GetValue(GroupAssetsType),
                 AssetExportType = parseResult.GetValue(AssetExportType),
+                Workers = parseResult.GetValue(Workers),
                 Key = parseResult.GetValue(Key),
                 AIFile = parseResult.GetValue(AIFile),
                 DummyDllFolder = parseResult.GetValue(DummyDllFolder),

@@ -43,6 +43,12 @@ directory priority is `ANIMESTUDIO_TEMP_DIR`, `appsettings.json`,
 Windows local application data directory. Do not change the Debian default to
 `/tmp`, because the target host mounts it as tmpfs.
 
+The CLI defaults `--workers` to the process-visible logical CPU count. Object
+parsing and AssetMap scanning parallelize across independent serialized files;
+non-FBX exports use bounded workers with output paths reserved in asset order.
+Shared resource streams synchronize seek/read operations, while FBX native
+export remains serialized until the native wrapper is proven reentrant.
+
 Every implementation session records its work in `STATUS.md`. `PLAN.md`
 contains only the current phase details, while `ROADMAP.md` owns long-term and
 cross-phase constraints. Keep these documents synchronized when scope,
