@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Buffers.Binary;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Globalization;
@@ -308,58 +309,90 @@ static void VerifyConcurrentResourceReaders()
 
 static void VerifyMultiWorkerObjectParsing()
 {
-    const int fileCount = 8;
+    const int objectCount = 16;
+    const int payloadSize = 512 * 1024;
+    const int objectSize = sizeof(int) + sizeof(int) + payloadSize;
+    var sourcePath = Path.Combine(
+        Path.GetTempPath(),
+        $"parallel-object-{Guid.NewGuid():N}.assets");
     var manager = new AssetsManager
     {
         Game = new Game(GameType.Normal, "parallel-smoke"),
         WorkerCount = 4,
     };
+    var previousProgress = Progress.Default;
+    var previousProgressSilent = Progress.Silent;
+    var progress = new ThreadRecordingProgress();
 
     try
     {
-        for (var index = 0; index < fileCount; index++)
+        var data = new byte[objectCount * objectSize];
+        for (var index = 0; index < objectCount; index++)
         {
-            var stream = new ParallelReadProbeStream(new byte[64]);
-            var reader = new FileReader(
-                Path.Combine(
-                    Path.GetTempPath(),
-                    $"parallel-object-{index}.assets"),
-                stream);
-            reader.Endian = EndianType.LittleEndian;
-            reader.Position = 0;
+            var objectOffset = index * objectSize;
+            BinaryPrimitives.WriteInt32LittleEndian(
+                data.AsSpan(objectOffset, sizeof(int)),
+                0);
+            BinaryPrimitives.WriteInt32LittleEndian(
+                data.AsSpan(
+                    objectOffset + sizeof(int),
+                    sizeof(int)),
+                payloadSize);
+        }
+        File.WriteAllBytes(sourcePath, data);
+        var reader = new FileReader(
+            sourcePath,
+            new FileStream(
+                sourcePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1,
+                FileOptions.RandomAccess));
+        reader.Endian = EndianType.LittleEndian;
+        reader.Position = 0;
 
-            var assetsFile = (SerializedFile)RuntimeHelpers
-                .GetUninitializedObject(typeof(SerializedFile));
-            assetsFile.assetsManager = manager;
-            assetsFile.reader = reader;
-            assetsFile.game = manager.Game;
-            assetsFile.fullName = reader.FullPath;
-            assetsFile.originalPath = reader.FullPath;
-            assetsFile.fileName = reader.FileName;
-            assetsFile.version = [2022, 3, 0, 0];
-            assetsFile.buildType = new BuildType("f");
-            assetsFile.m_TargetPlatform = BuildTarget.NoTarget;
-            assetsFile.header = new SerializedFileHeader
+        var assetsFile = (SerializedFile)RuntimeHelpers
+            .GetUninitializedObject(typeof(SerializedFile));
+        assetsFile.assetsManager = manager;
+        assetsFile.reader = reader;
+        assetsFile.game = manager.Game;
+        assetsFile.fullName = reader.FullPath;
+        assetsFile.originalPath = reader.FullPath;
+        assetsFile.fileName = reader.FileName;
+        assetsFile.version = [2022, 3, 0, 0];
+        assetsFile.buildType = new BuildType("f");
+        assetsFile.m_TargetPlatform = BuildTarget.StandaloneWindows64;
+        assetsFile.header = new SerializedFileHeader
+        {
+            m_Version = SerializedFileFormatVersion.LargeFilesSupport,
+        };
+        assetsFile.m_Externals = [];
+        assetsFile.Objects = [];
+        assetsFile.ObjectsDic = [];
+        assetsFile.m_Objects = Enumerable.Range(0, objectCount)
+            .Select(index => new ObjectInfo
             {
-                m_Version = SerializedFileFormatVersion.LargeFilesSupport,
-            };
-            assetsFile.m_Externals = [];
-            assetsFile.Objects = [];
-            assetsFile.ObjectsDic = [];
-            assetsFile.m_Objects =
-            [
-                new ObjectInfo
-                {
-                    byteStart = 0,
-                    byteSize = sizeof(uint),
-                    classID = (int)ClassIDType.UnknownType,
-                    m_PathID = index + 1,
-                }
-            ];
-            manager.assetsFileList.Add(assetsFile);
+                byteStart = index * objectSize,
+                byteSize = objectSize,
+                classID = (int)ClassIDType.TextAsset,
+                m_PathID = index + 1,
+            })
+            .ToList();
+        manager.assetsFileList.Add(assetsFile);
+
+        ThreadPool.GetMinThreads(
+            out var minimumWorkerThreads,
+            out var minimumCompletionPortThreads);
+        if (minimumWorkerThreads < manager.WorkerCount)
+        {
+            ThreadPool.SetMinThreads(
+                manager.WorkerCount,
+                minimumCompletionPortThreads);
         }
 
-        ParallelReadProbeStream.BeginMeasurement();
+        Progress.Default = progress;
+        Progress.Silent = false;
         var readAssets = typeof(AssetsManager).GetMethod(
             "ReadAssets",
             BindingFlags.Instance | BindingFlags.NonPublic)
@@ -376,28 +409,30 @@ static void VerifyMultiWorkerObjectParsing()
                 "Multi-worker object parsing failed.",
                 exception.InnerException ?? exception);
         }
-        finally
-        {
-            ParallelReadProbeStream.EndMeasurement();
-        }
 
         Assert(
-            ParallelReadProbeStream.MaximumConcurrentReads > 1,
-            "Object parsing did not use more than one worker.");
+            progress.WorkerThreadCount > 1,
+            "One serialized file did not use more than one object worker.");
         Assert(
-            manager.assetsFileList.Sum(file => file.Objects.Count) == fileCount,
+            assetsFile.Objects.Count == objectCount,
             "Multi-worker parsing lost or duplicated objects.");
         Assert(
-            manager.assetsFileList
-                .SelectMany(file => file.Objects)
+            assetsFile.Objects
                 .Select(obj => obj.m_PathID)
-                .Distinct()
-                .Count() == fileCount,
+                .SequenceEqual(
+                    Enumerable.Range(1, objectCount)
+                        .Select(index => (long)index)),
+            "Multi-worker parsing did not preserve object order.");
+        Assert(
+            assetsFile.ObjectsDic.Count == objectCount,
             "Multi-worker parsing produced duplicate object IDs.");
     }
     finally
     {
+        Progress.Default = previousProgress;
+        Progress.Silent = previousProgressSilent;
         manager.Clear();
+        File.Delete(sourcePath);
     }
 }
 
@@ -1828,86 +1863,32 @@ static void Assert(bool condition, string message)
     }
 }
 
-sealed class ParallelReadProbeStream : MemoryStream
+sealed class ThreadRecordingProgress : IProgress<int>
 {
-    private static int enabled;
-    private static int activeReads;
-    private static int maximumConcurrentReads;
+    private readonly HashSet<int> workerThreads = [];
 
-    internal ParallelReadProbeStream(byte[] buffer)
-        : base(buffer)
+    internal int WorkerThreadCount
     {
-    }
-
-    internal static int MaximumConcurrentReads =>
-        Volatile.Read(ref maximumConcurrentReads);
-
-    internal static void BeginMeasurement()
-    {
-        Volatile.Write(ref activeReads, 0);
-        Volatile.Write(ref maximumConcurrentReads, 0);
-        Volatile.Write(ref enabled, 1);
-    }
-
-    internal static void EndMeasurement()
-    {
-        Volatile.Write(ref enabled, 0);
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        if (Volatile.Read(ref enabled) == 0)
+        get
         {
-            return base.Read(buffer, offset, count);
-        }
-
-        EnterRead();
-        try
-        {
-            Thread.Sleep(25);
-            return base.Read(buffer, offset, count);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref activeReads);
-        }
-    }
-
-    public override int Read(Span<byte> buffer)
-    {
-        if (Volatile.Read(ref enabled) == 0)
-        {
-            return base.Read(buffer);
-        }
-
-        EnterRead();
-        try
-        {
-            Thread.Sleep(25);
-            return base.Read(buffer);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref activeReads);
-        }
-    }
-
-    private static void EnterRead()
-    {
-        var current = Interlocked.Increment(ref activeReads);
-        var maximum = Volatile.Read(ref maximumConcurrentReads);
-        while (current > maximum)
-        {
-            var observed = Interlocked.CompareExchange(
-                ref maximumConcurrentReads,
-                current,
-                maximum);
-            if (observed == maximum)
+            lock (workerThreads)
             {
-                break;
+                return workerThreads.Count;
             }
-
-            maximum = observed;
         }
+    }
+
+    public void Report(int value)
+    {
+        if (value <= 0)
+        {
+            return;
+        }
+
+        lock (workerThreads)
+        {
+            workerThreads.Add(Environment.CurrentManagedThreadId);
+        }
+        Thread.Sleep(1);
     }
 }

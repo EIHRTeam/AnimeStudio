@@ -14,18 +14,42 @@ namespace AnimeStudio
         public SerializedType serializedType;
         public BuildTarget platform;
         public SerializedFileFormatVersion m_Version;
+        public long SourceByteStart { get; }
 
         public int[] version => assetsFile.version;
         public BuildType buildType => assetsFile.buildType;
         public override long Remaining => byteStart + byteSize - Position;
 
-        public ObjectReader(EndianBinaryReader reader, SerializedFile assetsFile, ObjectInfo objectInfo, Game game) : base(reader.BaseStream, reader.Endian)
+        public ObjectReader(
+            EndianBinaryReader reader,
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Game game)
+            : this(
+                reader.BaseStream,
+                reader.Endian,
+                assetsFile,
+                objectInfo,
+                game,
+                objectInfo.byteStart)
+        {
+        }
+
+        private ObjectReader(
+            Stream stream,
+            EndianType endian,
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Game game,
+            long sourceByteStart)
+            : base(stream, endian)
         {
             this.assetsFile = assetsFile;
             Game = game;
             m_PathID = objectInfo.m_PathID;
             byteStart = objectInfo.byteStart;
             byteSize = objectInfo.byteSize;
+            SourceByteStart = sourceByteStart;
             if (Enum.IsDefined(typeof(ClassIDType), objectInfo.classID))
             {
                 type = (ClassIDType)objectInfo.classID;
@@ -40,6 +64,72 @@ namespace AnimeStudio
             m_Version = assetsFile.header.m_Version;
 
             Logger.Verbose($"Initialized reader for {type} object with {m_PathID} in file {assetsFile.fileName} !!");
+        }
+
+        internal static bool SupportsIndependentReading(SerializedFile assetsFile)
+        {
+            var stream = assetsFile.reader.BaseStream;
+            return stream is ReadOnlySliceStream
+                || stream is FileStream
+                || stream is MemoryStream memoryStream
+                    && memoryStream.TryGetBuffer(out _);
+        }
+
+        internal static ObjectReader CreateIndependent(
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Game game)
+        {
+            Stream objectStream;
+            var sourceStream = assetsFile.reader.BaseStream;
+            if (sourceStream is ReadOnlySliceStream sliceStream)
+            {
+                objectStream = sliceStream.CreateView(
+                    objectInfo.byteStart,
+                    objectInfo.byteSize);
+            }
+            else if (sourceStream is FileStream fileStream)
+            {
+                objectStream = new ReadOnlyRandomAccessStream(
+                    fileStream.SafeFileHandle,
+                    objectInfo.byteStart,
+                    objectInfo.byteSize);
+            }
+            else if (sourceStream is MemoryStream memoryStream
+                && memoryStream.TryGetBuffer(out var memorySegment))
+            {
+                objectStream = new ReadOnlyRandomAccessStream(
+                    memorySegment.Array,
+                    checked(
+                        memorySegment.Offset
+                        + checked((int)objectInfo.byteStart)),
+                    checked((int)objectInfo.byteSize));
+            }
+            else
+            {
+                throw new NotSupportedException(
+                    $"Stream type {sourceStream.GetType().Name} does not " +
+                    "support independent object reads.");
+            }
+
+            var relativeObjectInfo = new ObjectInfo
+            {
+                byteStart = 0,
+                byteSize = objectInfo.byteSize,
+                typeID = objectInfo.typeID,
+                classID = objectInfo.classID,
+                isDestroyed = objectInfo.isDestroyed,
+                stripped = objectInfo.stripped,
+                m_PathID = objectInfo.m_PathID,
+                serializedType = objectInfo.serializedType
+            };
+            return new ObjectReader(
+                objectStream,
+                assetsFile.reader.Endian,
+                assetsFile,
+                relativeObjectInfo,
+                game,
+                objectInfo.byteStart);
         }
 
         public override int Read(byte[] buffer, int index, int count)
@@ -59,7 +149,9 @@ namespace AnimeStudio
                 throw new ArgumentOutOfRangeException(nameof(alignment), alignment, "Alignment must be positive.");
             }
 
-            var mod = Position % alignment;
+            var sourcePosition = checked(
+                SourceByteStart + (Position - byteStart));
+            var mod = sourcePosition % alignment;
             var skip = mod == 0 ? 0 : alignment - mod;
             if (skip > Remaining)
             {
@@ -70,7 +162,9 @@ namespace AnimeStudio
 
         public void Reset()
         {
-            Logger.Verbose($"Resetting reader position to object offset 0x{byteStart:X8}...");
+            Logger.Verbose(
+                $"Resetting reader position to object offset " +
+                $"0x{SourceByteStart:X8}...");
             Position = byteStart;
         }
 

@@ -5,7 +5,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Runtime;
-using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -752,24 +751,71 @@ namespace AnimeStudio
             var progressCount = assetsFileList.Sum(x => x.m_Objects.Count);
             int i = 0;
             Progress.Reset();
+            var fileParallelism = Math.Min(
+                WorkerCount,
+                Math.Max(1, assetsFileList.Count));
             try
             {
-                Parallel.ForEach(
-                    assetsFileList,
-                    new ParallelOptions
+                BoundedParallel.For(
+                    0,
+                    assetsFileList.Count,
+                    fileParallelism,
+                    tokenSource.Token,
+                    fileIndex =>
                     {
-                        MaxDegreeOfParallelism = WorkerCount,
-                        CancellationToken = tokenSource.Token
-                    },
-                    assetsFile =>
-                    {
-                        foreach (var objectInfo in assetsFile.m_Objects)
+                        var assetsFile = assetsFileList[fileIndex];
+                        var objectParallelism = GetObjectWorkerCount(
+                            fileIndex,
+                            assetsFileList.Count,
+                            WorkerCount);
+                        var parsedObjects =
+                            new Object[assetsFile.m_Objects.Count];
+                        var useIndependentReaders =
+                            objectParallelism > 1
+                            && ObjectReader.SupportsIndependentReading(
+                                assetsFile);
+                        if (useIndependentReaders)
                         {
-                            tokenSource.Token.ThrowIfCancellationRequested();
-                            ReadAssetObject(assetsFile, objectInfo);
-                            Progress.Report(
-                                Interlocked.Increment(ref i),
-                                progressCount);
+                            BoundedParallel.For(
+                                0,
+                                parsedObjects.Length,
+                                objectParallelism,
+                                tokenSource.Token,
+                                index =>
+                                {
+                                    parsedObjects[index] = ReadAssetObject(
+                                        assetsFile,
+                                        assetsFile.m_Objects[index],
+                                        independentReader: true);
+                                    Progress.Report(
+                                        Interlocked.Increment(ref i),
+                                        progressCount);
+                                });
+                        }
+                        else
+                        {
+                            for (var index = 0;
+                                index < parsedObjects.Length;
+                                index++)
+                            {
+                                tokenSource.Token
+                                    .ThrowIfCancellationRequested();
+                                parsedObjects[index] = ReadAssetObject(
+                                    assetsFile,
+                                    assetsFile.m_Objects[index],
+                                    independentReader: false);
+                                Progress.Report(
+                                    Interlocked.Increment(ref i),
+                                    progressCount);
+                            }
+                        }
+
+                        foreach (var parsedObject in parsedObjects)
+                        {
+                            if (parsedObject != null)
+                            {
+                                assetsFile.AddObject(parsedObject);
+                            }
                         }
                     });
             }
@@ -777,29 +823,41 @@ namespace AnimeStudio
             {
                 Logger.Info("Reading assets has been cancelled !!");
             }
-            catch (AggregateException exception)
-            {
-                var flattened = exception.Flatten();
-                var outOfMemory = flattened.InnerExceptions
-                    .FirstOrDefault(inner => inner is OutOfMemoryException);
-                if (outOfMemory != null)
-                {
-                    ExceptionDispatchInfo.Capture(outOfMemory).Throw();
-                }
-
-                throw;
-            }
         }
 
-        private void ReadAssetObject(
-            SerializedFile assetsFile,
-            ObjectInfo objectInfo)
+        private static int GetObjectWorkerCount(
+            int fileIndex,
+            int fileCount,
+            int workerCount)
         {
-            var objectReader =
-                new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
+            if (fileCount >= workerCount)
+            {
+                return 1;
+            }
+
+            var workersPerFile = workerCount / fileCount;
+            var remainder = workerCount % fileCount;
+            return workersPerFile + (fileIndex < remainder ? 1 : 0);
+        }
+
+        private Object ReadAssetObject(
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            bool independentReader)
+        {
+            var objectReader = independentReader
+                ? ObjectReader.CreateIndependent(
+                    assetsFile,
+                    objectInfo,
+                    Game)
+                : new ObjectReader(
+                    assetsFile.reader,
+                    assetsFile,
+                    objectInfo,
+                    Game);
             try
             {
-                Object obj = objectReader.type switch
+                return objectReader.type switch
                 {
                     ClassIDType.Animation when ClassIDType.Animation.CanParse() => new Animation(objectReader),
                     ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanParse() => new AnimationClip(objectReader),
@@ -834,7 +892,6 @@ namespace AnimeStudio
                     ClassIDType.NapAssetBundleIndexAsset when ClassIDType.NapAssetBundleIndexAsset.CanParse() => new NapAssetBundleIndexAsset(objectReader),
                     _ => new Object(objectReader),
                 };
-                assetsFile.AddObject(obj);
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {
@@ -846,6 +903,7 @@ namespace AnimeStudio
                     .AppendLine($"PathID {objectInfo.m_PathID}")
                     .Append(e);
                 Logger.Error(sb.ToString());
+                return null;
             }
         }
 

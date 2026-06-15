@@ -10,14 +10,20 @@ namespace AnimeStudio
         private readonly SharedBackingStore backingStore;
         private readonly long offset;
         private readonly long length;
+        private readonly bool ownsReference;
         private long position;
         private int disposed;
 
-        internal ReadOnlySliceStream(SharedBackingStore backingStore, long offset, long length)
+        internal ReadOnlySliceStream(
+            SharedBackingStore backingStore,
+            long offset,
+            long length,
+            bool ownsReference = true)
         {
             this.backingStore = backingStore;
             this.offset = offset;
             this.length = length;
+            this.ownsReference = ownsReference;
         }
 
         public override bool CanRead => disposed == 0;
@@ -88,6 +94,31 @@ namespace AnimeStudio
             return ValueTask.FromResult(Read(buffer.Span));
         }
 
+        internal ReadOnlySliceStream CreateView(
+            long relativeOffset,
+            long viewLength)
+        {
+            ThrowIfDisposed();
+            if (relativeOffset < 0 || viewLength < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(relativeOffset));
+            }
+
+            var end = checked(relativeOffset + viewLength);
+            if (end > length)
+            {
+                throw new EndOfStreamException(
+                    $"Range [{relativeOffset}, {end}) exceeds slice length " +
+                    $"{length}.");
+            }
+
+            return new ReadOnlySliceStream(
+                backingStore,
+                checked(offset + relativeOffset),
+                viewLength,
+                ownsReference: false);
+        }
+
         public override long Seek(long seekOffset, SeekOrigin origin)
         {
             ThrowIfDisposed();
@@ -121,7 +152,7 @@ namespace AnimeStudio
 
         protected override void Dispose(bool disposing)
         {
-            if (Interlocked.Exchange(ref disposed, 1) == 0)
+            if (Interlocked.Exchange(ref disposed, 1) == 0 && ownsReference)
             {
                 backingStore.ReleaseSlice();
             }

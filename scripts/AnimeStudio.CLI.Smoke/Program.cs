@@ -67,7 +67,9 @@ static void VerifyRuntimeConfiguration(string publishDirectory)
         .GetProperty("runtimeOptions")
         .GetProperty("configProperties");
 
-    Assert(properties.GetProperty("System.GC.Server").GetBoolean(), "Server GC must be enabled.");
+    Assert(
+        !properties.GetProperty("System.GC.Server").GetBoolean(),
+        "Server GC must remain disabled after exceeding the RSS gate.");
     Assert(properties.GetProperty("System.GC.Concurrent").GetBoolean(), "Concurrent GC must remain enabled.");
     Assert(
         properties.GetProperty("System.GC.HeapHardLimitPercent").GetInt32() == 75,

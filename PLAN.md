@@ -36,7 +36,9 @@ preserving existing schemas, filter order, and output compatibility.
   after all source files have contributed.
 - Release each file's loaded assets, object dictionaries, and relationship
   lists before processing the next file.
-- Do not introduce object-level parallelism or unbounded channels.
+- Do not introduce unbounded channels. Object-level parallelism is permitted
+  only through independent read-only object ranges under the global worker
+  budget.
 
 ## 4. Streaming Writers
 
@@ -63,20 +65,23 @@ preserving existing schemas, filter order, and output compatibility.
 - Add a CLI worker-count option whose default is the process-visible logical
   CPU count. Values below one are rejected; single-core hosts remain
   functional but are not the optimization target.
-- Parse objects in parallel across independent `SerializedFile` instances.
-  Never read one serialized file's mutable stream from multiple workers.
-- Scan AssetMap objects in parallel by serialized file, then merge per-file
-  results in the original file/object order before applying the compatibility
-  string cache, relationship resolution, filters, and spool writes.
+- Parse objects in parallel across independent `SerializedFile` instances and,
+  when there are fewer files than workers, across independent object-bounded
+  views within a serialized file. Never share a mutable stream position
+  between workers.
+- Scan AssetMap objects through the same bounded file/object worker allocation,
+  then merge results in the original file/object order before applying the
+  compatibility string cache, relationship resolution, filters, and spool
+  writes.
 - Export non-FBX assets with bounded workers. Reserve primary output paths in
   original asset order so duplicate handling and deterministic outputs do not
   depend on scheduler order.
 - Synchronize shared resource stream reads so seek/read operations cannot
   overlap. Keep FBX native export in an explicit serial critical section until
   the native library is proven reentrant.
-- Use Server GC for the batch CLI and retain the existing heap hard limit.
-  Debian acceptance must prove that multi-core GC and workers do not exceed
-  the established RSS gates.
+- Keep Workstation GC after the Debian Server GC candidate exceeded the
+  established AssetMap RSS gate. Retain concurrent GC, the existing heap hard
+  limit, and retained VM policy.
 - Remove `Task.Run(...).Wait()` wrappers that only move serial work to another
   thread.
 
@@ -95,7 +100,7 @@ preserving existing schemas, filter order, and output compatibility.
 - Smoke coverage proves worker option validation, deterministic output-path
   reservation, shared resource-reader correctness under concurrency, and
   multi-worker object parsing without duplicate or missing objects.
-- Published runtime configuration enables Server GC while preserving
+- Published runtime configuration keeps Server GC disabled while preserving
   concurrent GC, the 75 percent heap hard limit, and retained VM policy.
 - `git diff --check` and active-file legacy reference scans pass.
 
