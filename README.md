@@ -52,7 +52,7 @@ On Windows:
 Supported release RIDs:
 
 - `win-x64`
-- `linux-x64` with Debian 13 as the baseline
+- `linux-x64` with Debian GNU/Linux 13 as the baseline
 - `osx-arm64` with macOS 15 as the baseline
 
 ## Development
@@ -68,3 +68,11 @@ Historical migration reports are under `docs/archive/`.
 This repository is derived from AnimeStudio/AssetStudio forks maintained by
 Escartem, Razmoth, Perfare, and other contributors. See `LICENSE` and
 `THIRD_PARTY_NOTICES.md`.
+
+## Credits
+
+Special thanks to:
+
+- All contributors of the original Assets Studio
+- [Escartem](https://github.com/Escartem) and all contributors of Anime Studio
+- [ZengXiaoPi](https://github.com/ZengXiaoPi) and [mengxixiao](https://github.com/mengxixiao)
