@@ -73,6 +73,6 @@ Escartem, Razmoth, Perfare, and other contributors. See `LICENSE` and
 
 Special thanks to:
 
-- All contributors of the original Assets Studio
+- All contributors of the original Asset Studio
 - [Escartem](https://github.com/Escartem) and all contributors of Anime Studio
 - [ZengXiaoPi](https://github.com/ZengXiaoPi) and [mengxixiao](https://github.com/mengxixiao)
