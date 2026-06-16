@@ -14,7 +14,7 @@ namespace AnimeStudio
     public static class AssetsHelper
     {
         public const string MapName = "Maps";
-        internal const int AssetMapObjectBatchSize = 16 * 1024;
+        internal const int AssetMapObjectBatchSize = 4 * 1024;
 
         public static bool Minimal = true;
         public static CancellationTokenSource tokenSource = new CancellationTokenSource();

@@ -48,6 +48,9 @@ The detailed implementation and acceptance criteria are in `PLAN.md`.
 
 - Stream OBJ, YAML, Shader, header, Raw, audio, and video output directly.
 - Add bounded resource-copy APIs instead of complete byte arrays.
+- Add full Debian systemd integration for long-running CLI deployments:
+  maintained service, environment, and install assets plus documented
+  `systemctl` management and `journalctl` log inspection workflows.
 
 ## Phase 4 - Texture, Sprite, FBX, TypeTree, and Mesh Memory Reduction
 

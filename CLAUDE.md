@@ -76,6 +76,14 @@ validation after a phase completes or whenever implementation risk warrants
 earlier testing. Record the commands, peak resource metrics, and outcomes in
 `STATUS.md`; do not store server credentials in repository files.
 
+Phase 3 must add full systemd deployment integration for Debian service usage.
+Use committed templates/scripts rather than ad-hoc server commands: include a
+maintained service unit, environment configuration, install/uninstall or
+management helpers, and operator documentation for `systemctl` lifecycle
+commands and `journalctl` log inspection/following. Service stdout/stderr
+should remain journal-visible, writable paths must be explicit, and hardening
+must not break configured input, output, or AnimeStudio temporary directories.
+
 The normal server delivery path is: commit locally, push the active branch to
 GitHub, then fetch and check out the exact commit on the server. Use direct
 archive or file transfer only when GitHub is unavailable or diagnostic changes
