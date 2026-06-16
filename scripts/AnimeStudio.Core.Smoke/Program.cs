@@ -44,6 +44,7 @@ try
     VerifyConcurrentPPtrFileCache();
     VerifyBoundedParallelWorkerSlots();
     VerifyMultiWorkerObjectParsing();
+    VerifyBatchedAssetMapObjectScanning();
     VerifyBackingHashesAndCleanup();
     VerifyAggregateMemoryBudget();
     VerifyAssetMapEntrySpool();
@@ -835,6 +836,130 @@ static void VerifyBoundedParallelWorkerSlots()
     Assert(
         processedByWorker.All(count => count > 0),
         "A bounded parallel worker slot did not process any work.");
+}
+
+static void VerifyBatchedAssetMapObjectScanning()
+{
+    var objectCount = AssetsHelper.AssetMapObjectBatchSize + 1;
+    const int objectSize = sizeof(int);
+    var root = CreateTemporaryRoot();
+    var sourcePath = Path.Combine(root, "batched-asset-map.assets");
+    var manager = new AssetsManager
+    {
+        Game = new Game(GameType.Normal, "batched-asset-map-smoke"),
+        WorkerCount = 4,
+        Silent = true,
+        SkipProcess = true,
+        ResolveDependencies = false,
+        ContainerStorageOptions = new ContainerStorageOptions
+        {
+            TemporaryDirectory = root
+        }
+    };
+    var managerField = typeof(AssetsHelper).GetField(
+        "assetsManager",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(
+            typeof(AssetsHelper).FullName,
+            "assetsManager");
+    var previousManager = managerField.GetValue(null);
+
+    try
+    {
+        File.WriteAllBytes(sourcePath, new byte[objectCount * objectSize]);
+        var reader = new FileReader(
+            sourcePath,
+            new FileStream(
+                sourcePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1,
+                FileOptions.RandomAccess));
+        reader.Endian = EndianType.LittleEndian;
+
+        var assetsFile = (SerializedFile)RuntimeHelpers
+            .GetUninitializedObject(typeof(SerializedFile));
+        assetsFile.assetsManager = manager;
+        assetsFile.reader = reader;
+        assetsFile.game = manager.Game;
+        assetsFile.fullName = reader.FullPath;
+        assetsFile.originalPath = reader.FullPath;
+        assetsFile.fileName = reader.FileName;
+        assetsFile.version = [2022, 3, 0, 0];
+        assetsFile.buildType = new BuildType("f");
+        assetsFile.m_TargetPlatform = BuildTarget.StandaloneWindows64;
+        assetsFile.header = new SerializedFileHeader
+        {
+            m_Version = SerializedFileFormatVersion.LargeFilesSupport,
+        };
+        assetsFile.m_Externals = [];
+        assetsFile.Objects = [];
+        assetsFile.ObjectsDic = [];
+        assetsFile.m_Objects = Enumerable.Range(0, objectCount)
+            .Select(index => new ObjectInfo
+            {
+                byteStart = index * objectSize,
+                byteSize = objectSize,
+                classID = (int)ClassIDType.TextAsset,
+                m_PathID = index + 1,
+            })
+            .ToList();
+        manager.assetsFileList.Add(assetsFile);
+        managerField.SetValue(null, manager);
+
+        using var spool =
+            new AssetMapEntrySpool(manager.ContainerStorageOptions);
+        using var stringCache =
+            new AssetMapStringCache(manager.ContainerStorageOptions);
+        var buildAssetMapFile = typeof(AssetsHelper).GetMethod(
+            "BuildAssetMapFile",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                typeof(AssetsHelper).FullName,
+                "BuildAssetMapFile");
+        try
+        {
+            buildAssetMapFile.Invoke(
+                null,
+                [
+                    sourcePath,
+                    spool,
+                    stringCache,
+                    new AssetMapBuildMetrics(),
+                    null,
+                    null,
+                    null
+                ]);
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw new InvalidOperationException(
+                "Batched AssetMap object scanning failed.",
+                exception.InnerException ?? exception);
+        }
+
+        Assert(
+            spool.Count == objectCount,
+            "Batched AssetMap scanning lost or duplicated entries.");
+        Assert(
+            assetsFile.Objects.Count == objectCount,
+            "Batched AssetMap scanning lost or duplicated objects.");
+        Assert(
+            assetsFile.Objects
+                .Select(obj => obj.m_PathID)
+                .SequenceEqual(
+                    Enumerable.Range(1, objectCount)
+                        .Select(index => (long)index)),
+            "Batched AssetMap scanning changed object order.");
+    }
+    finally
+    {
+        managerField.SetValue(null, previousManager);
+        manager.Clear();
+        StringCache.Clear();
+        Directory.Delete(root, recursive: true);
+    }
 }
 
 static void VerifyAggregateMemoryBudget()

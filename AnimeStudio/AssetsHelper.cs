@@ -13,6 +13,7 @@ namespace AnimeStudio
     public static class AssetsHelper
     {
         public const string MapName = "Maps";
+        internal const int AssetMapObjectBatchSize = 16 * 1024;
 
         public static bool Minimal = true;
         public static CancellationTokenSource tokenSource = new CancellationTokenSource();
@@ -431,51 +432,69 @@ namespace AnimeStudio
             var animators = new List<(PPtr<Object>, AssetMapEntryRecord)>();
             using var objectScanningMeasurement =
                 metrics.Measure(AssetMapBuildStage.ObjectScanning);
-            var scanResults =
-                new AssetMapSerializedFileScan[assetsManager.assetsFileList.Count];
-            var fileParallelism = Math.Min(
+            var workerStates = new AssetMapObjectWorkerState[Math.Min(
                 assetsManager.WorkerCount,
-                Math.Max(1, scanResults.Length));
-            BoundedParallel.For(
-                0,
-                scanResults.Length,
-                fileParallelism,
-                tokenSource.Token,
-                index =>
-                {
-                    var objectParallelism = GetObjectWorkerCount(
-                        index,
-                        scanResults.Length,
-                        assetsManager.WorkerCount);
-                    scanResults[index] = ScanAssetMapSerializedFile(
-                        file,
-                        assetsManager.assetsFileList[index],
-                        objectParallelism);
-                });
-
-            foreach (var scanResult in scanResults)
+                AssetMapObjectBatchSize)];
+            var workItems =
+                new AssetMapObjectWorkItem[AssetMapObjectBatchSize];
+            var objectScans =
+                new AssetMapObjectScan[AssetMapObjectBatchSize];
+            var batchCount = 0;
+            try
             {
-                foreach (var asset in scanResult.AllEntries)
+                foreach (var assetsFile in assetsManager.assetsFileList)
                 {
-                    asset.Source = stringCache.Get(asset.Source);
-                    asset.Container = stringCache.Get(asset.Container);
-                    asset.Hash = stringCache.Get(asset.Hash);
-                    if (asset.CacheName)
+                    var supportsIndependentReading =
+                        ObjectReader.SupportsIndependentReading(
+                            assetsFile);
+                    foreach (var objectInfo in assetsFile.m_Objects)
                     {
-                        asset.Name = stringCache.Get(asset.Name);
+                        workItems[batchCount++] =
+                            new AssetMapObjectWorkItem(
+                                assetsFile,
+                                objectInfo,
+                                supportsIndependentReading);
+                        if (batchCount == workItems.Length)
+                        {
+                            ScanAndMergeAssetMapBatch(
+                                file,
+                                workItems,
+                                objectScans,
+                                batchCount,
+                                workerStates,
+                                stringCache,
+                                matches,
+                                containers,
+                                mihoyoBinDataNames,
+                                objectAssetItemDic,
+                                animators);
+                            batchCount = 0;
+                        }
                     }
                 }
 
-                foreach (var pair in scanResult.ObjectEntries)
+                if (batchCount > 0)
                 {
-                    objectAssetItemDic.Add(pair.Object, pair.Asset);
+                    ScanAndMergeAssetMapBatch(
+                        file,
+                        workItems,
+                        objectScans,
+                        batchCount,
+                        workerStates,
+                        stringCache,
+                        matches,
+                        containers,
+                        mihoyoBinDataNames,
+                        objectAssetItemDic,
+                        animators);
                 }
-
-                matches.AddRange(scanResult.Matches);
-                containers.AddRange(scanResult.Containers);
-                mihoyoBinDataNames.AddRange(
-                    scanResult.MiHoYoBinDataNames);
-                animators.AddRange(scanResult.Animators);
+            }
+            finally
+            {
+                foreach (var workerState in workerStates)
+                {
+                    workerState?.Dispose();
+                }
             }
 
             foreach ((var pptr, var asset) in animators)
@@ -526,113 +545,91 @@ namespace AnimeStudio
             filteringMeasurement.Dispose();
         }
 
-        private static int GetObjectWorkerCount(
-            int fileIndex,
-            int fileCount,
-            int workerCount)
-        {
-            if (fileCount >= workerCount)
-            {
-                return 1;
-            }
-
-            var workersPerFile = workerCount / fileCount;
-            var remainder = workerCount % fileCount;
-            return workersPerFile + (fileIndex < remainder ? 1 : 0);
-        }
-
-        private static AssetMapSerializedFileScan ScanAssetMapSerializedFile(
+        private static void ScanAndMergeAssetMapBatch(
             string file,
-            SerializedFile assetsFile,
-            int objectParallelism)
+            AssetMapObjectWorkItem[] workItems,
+            AssetMapObjectScan[] objectScans,
+            int count,
+            AssetMapObjectWorkerState[] workerStates,
+            AssetMapStringCache stringCache,
+            List<AssetMapEntryRecord> matches,
+            List<(PPtr<Object>, string)> containers,
+            List<(PPtr<Object>, string)> mihoyoBinDataNames,
+            Dictionary<Object, AssetMapEntryRecord> objectAssetItemDic,
+            List<(PPtr<Object>, AssetMapEntryRecord)> animators)
         {
-            var result = new AssetMapSerializedFileScan();
-            var objectScans =
-                new AssetMapObjectScan[assetsFile.m_Objects.Count];
-            var useIndependentReaders =
-                objectParallelism > 1
-                && ObjectReader.SupportsIndependentReading(assetsFile);
-            if (useIndependentReaders)
-            {
-                var activeWorkerCount = Math.Min(
-                    objectParallelism,
-                    objectScans.Length);
-                var workerReaders =
-                    new EndianBinaryReader[activeWorkerCount];
-                try
+            BoundedParallel.For(
+                0,
+                count,
+                assetsManager.WorkerCount,
+                tokenSource.Token,
+                (workerIndex, index) =>
                 {
-                    for (var index = 0;
-                        index < workerReaders.Length;
-                        index++)
+                    var workItem = workItems[index];
+                    if (workItem.SupportsIndependentReading)
                     {
-                        workerReaders[index] =
-                            ObjectReader.CreateIndependentReader(
-                                assetsFile);
+                        var workerState =
+                            workerStates[workerIndex] ??=
+                                new AssetMapObjectWorkerState();
+                        objectScans[index] = ScanAssetMapObject(
+                            file,
+                            workItem.AssetsFile,
+                            workItem.ObjectInfo,
+                            workerState.GetReader(
+                                workItem.AssetsFile));
                     }
-
-                    BoundedParallel.For(
-                        0,
-                        objectScans.Length,
-                        objectParallelism,
-                        tokenSource.Token,
-                        (workerIndex, index) =>
+                    else
+                    {
+                        lock (workItem.AssetsFile.reader)
                         {
                             objectScans[index] = ScanAssetMapObject(
                                 file,
-                                assetsFile,
-                                assetsFile.m_Objects[index],
-                                workerReaders[workerIndex]);
-                        });
-                }
-                finally
-                {
-                    foreach (var workerReader in workerReaders)
-                    {
-                        workerReader?.Dispose();
+                                workItem.AssetsFile,
+                                workItem.ObjectInfo,
+                                workItem.AssetsFile.reader);
+                        }
                     }
-                }
-            }
-            else
-            {
-                for (var index = 0; index < objectScans.Length; index++)
-                {
-                    tokenSource.Token.ThrowIfCancellationRequested();
-                    objectScans[index] = ScanAssetMapObject(
-                        file,
-                        assetsFile,
-                        assetsFile.m_Objects[index],
-                        assetsFile.reader);
-                }
-            }
+                });
 
-            foreach (var scan in objectScans)
+            for (var index = 0; index < count; index++)
             {
-                result.AllEntries.Add(scan.Asset);
+                var workItem = workItems[index];
+                var scan = objectScans[index];
+                var asset = scan.Asset;
+                asset.Source = stringCache.Get(asset.Source);
+                asset.Container = stringCache.Get(asset.Container);
+                asset.Hash = stringCache.Get(asset.Hash);
+                if (asset.CacheName)
+                {
+                    asset.Name = stringCache.Get(asset.Name);
+                }
+
                 if (scan.Object != null)
                 {
-                    result.ObjectEntries.Add((scan.Object, scan.Asset));
-                    assetsFile.AddObject(scan.Object);
+                    objectAssetItemDic.Add(scan.Object, asset);
+                    workItem.AssetsFile.AddObject(scan.Object);
                 }
                 if (scan.Exportable)
                 {
-                    result.Matches.Add(scan.Asset);
+                    matches.Add(asset);
                 }
                 if (scan.Containers != null)
                 {
-                    result.Containers.AddRange(scan.Containers);
+                    containers.AddRange(scan.Containers);
                 }
                 if (scan.MiHoYoBinDataNames != null)
                 {
-                    result.MiHoYoBinDataNames.AddRange(
+                    mihoyoBinDataNames.AddRange(
                         scan.MiHoYoBinDataNames);
                 }
                 if (scan.Animator != null)
                 {
-                    result.Animators.Add((scan.Animator, scan.Asset));
+                    animators.Add((scan.Animator, asset));
                 }
-            }
 
-            return result;
+                objectScans[index] = default;
+                workItems[index] = default;
+            }
         }
 
         private static AssetMapObjectScan ScanAssetMapObject(
@@ -834,22 +831,37 @@ namespace AnimeStudio
             internal PPtr<Object> Animator;
         }
 
-        private sealed class AssetMapSerializedFileScan
+        private readonly record struct AssetMapObjectWorkItem(
+            SerializedFile AssetsFile,
+            ObjectInfo ObjectInfo,
+            bool SupportsIndependentReading);
+
+        private sealed class AssetMapObjectWorkerState : IDisposable
         {
-            internal List<AssetMapEntryRecord> AllEntries { get; } = [];
+            private readonly Dictionary<SerializedFile, EndianBinaryReader>
+                readers = [];
 
-            internal List<(Object Object, AssetMapEntryRecord Asset)>
-                ObjectEntries { get; } = [];
+            internal EndianBinaryReader GetReader(
+                SerializedFile assetsFile)
+            {
+                if (!readers.TryGetValue(assetsFile, out var reader))
+                {
+                    reader = ObjectReader.CreateIndependentReader(
+                        assetsFile);
+                    readers.Add(assetsFile, reader);
+                }
 
-            internal List<AssetMapEntryRecord> Matches { get; } = [];
+                return reader;
+            }
 
-            internal List<(PPtr<Object>, string)> Containers { get; } = [];
-
-            internal List<(PPtr<Object>, string)> MiHoYoBinDataNames { get; } =
-                [];
-
-            internal List<(PPtr<Object>, AssetMapEntryRecord)> Animators
-                { get; } = [];
+            public void Dispose()
+            {
+                foreach (var reader in readers.Values)
+                {
+                    reader.Dispose();
+                }
+                readers.Clear();
+            }
         }
 
         public static string[] ParseAssetMap(string mapName, ExportListType mapType, ClassIDType[] typeFilter, Regex[] nameFilter, Regex[] containerFilter)
