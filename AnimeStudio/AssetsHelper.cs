@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Threading;
 using System.Globalization;
+using System.Runtime;
 using System.Text.RegularExpressions;
 using System.Text;
 using System.Threading.Tasks;
@@ -369,6 +370,7 @@ namespace AnimeStudio
                 {
                     foreach (var file in LoadFiles(files, metrics))
                     {
+                        CollectAfterAssetMapLoad();
                         BuildAssetMapFile(
                             file,
                             unresolvedSpool,
@@ -414,6 +416,23 @@ namespace AnimeStudio
                 metrics.LogSummary(assetCount);
                 StringCache.Clear();
             }
+        }
+
+        private static void CollectAfterAssetMapLoad()
+        {
+            GCSettings.LargeObjectHeapCompactionMode =
+                GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(
+                GC.MaxGeneration,
+                GCCollectionMode.Forced,
+                blocking: true,
+                compacting: true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(
+                GC.MaxGeneration,
+                GCCollectionMode.Forced,
+                blocking: true,
+                compacting: true);
         }
 
         private static void BuildAssetMapFile(
