@@ -13,7 +13,7 @@ namespace AnimeStudio
 
             return requestedWorkers <= 2
                 ? requestedWorkers
-                : requestedWorkers - 1;
+                : Math.Max(2, requestedWorkers / 2);
         }
     }
 }

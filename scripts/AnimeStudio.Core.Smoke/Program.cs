@@ -972,8 +972,11 @@ static void VerifyMemoryStableWorkerBudget()
         WorkerBudget.GetMemoryStableWorkerCount(2) == 2,
         "Two-worker budget stopped using both workers.");
     Assert(
-        WorkerBudget.GetMemoryStableWorkerCount(4) == 3,
-        "Four-worker memory-stable budget did not reserve one worker.");
+        WorkerBudget.GetMemoryStableWorkerCount(4) == 2,
+        "Four-worker memory-stable budget did not cap retained graph workers.");
+    Assert(
+        WorkerBudget.GetMemoryStableWorkerCount(8) == 4,
+        "Eight-worker memory-stable budget did not keep bounded multi-core work.");
     AssertThrows<ArgumentOutOfRangeException>(
         () => WorkerBudget.GetMemoryStableWorkerCount(0));
 }
