@@ -447,7 +447,8 @@ namespace AnimeStudio
             var matches = new List<AssetMapEntryRecord>();
             var containers = new List<(PPtr<Object>, string)>();
             var mihoyoBinDataNames = new List<(PPtr<Object>, string)>();
-            var objectAssetItemDic = new Dictionary<Object, AssetMapEntryRecord>();
+            var objectAssetItems =
+                new Dictionary<AssetMapObjectKey, AssetMapEntryRecord>();
             var animators = new List<(PPtr<Object>, AssetMapEntryRecord)>();
             using var objectScanningMeasurement =
                 metrics.Measure(AssetMapBuildStage.ObjectScanning);
@@ -485,7 +486,7 @@ namespace AnimeStudio
                                 matches,
                                 containers,
                                 mihoyoBinDataNames,
-                                objectAssetItemDic,
+                                objectAssetItems,
                                 animators);
                             batchCount = 0;
                         }
@@ -504,7 +505,7 @@ namespace AnimeStudio
                         matches,
                         containers,
                         mihoyoBinDataNames,
-                        objectAssetItemDic,
+                        objectAssetItems,
                         animators);
                 }
             }
@@ -525,9 +526,10 @@ namespace AnimeStudio
             }
             foreach ((var pptr, var name) in mihoyoBinDataNames)
             {
-                if (pptr.TryGet<MiHoYoBinData>(out var miHoYoBinData))
+                if (TryGetAssetMapObjectKey(pptr, out var key)
+                    && objectAssetItems.TryGetValue(key, out var asset)
+                    && asset.Type == ClassIDType.MiHoYoBinData)
                 {
-                    var asset = objectAssetItemDic[miHoYoBinData];
                     if (int.TryParse(name, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hash))
                     {
                         asset.Name = stringCache.Get(name);
@@ -538,9 +540,10 @@ namespace AnimeStudio
             }
             foreach ((var pptr, var container) in containers)
             {
-                if (pptr.TryGet(out var obj))
+                if (TryGetAssetMapObjectKey(pptr, out var key)
+                    && objectAssetItems.TryGetValue(key, out var asset))
                 {
-                    objectAssetItemDic[obj].Container = stringCache.Get(container);
+                    asset.Container = stringCache.Get(container);
                 }
             }
             objectScanningMeasurement.Dispose();
@@ -574,7 +577,7 @@ namespace AnimeStudio
             List<AssetMapEntryRecord> matches,
             List<(PPtr<Object>, string)> containers,
             List<(PPtr<Object>, string)> mihoyoBinDataNames,
-            Dictionary<Object, AssetMapEntryRecord> objectAssetItemDic,
+            Dictionary<AssetMapObjectKey, AssetMapEntryRecord> objectAssetItems,
             List<(PPtr<Object>, AssetMapEntryRecord)> animators)
         {
             BoundedParallel.For(
@@ -624,9 +627,12 @@ namespace AnimeStudio
                     asset.Name = stringCache.Get(asset.Name);
                 }
 
+                objectAssetItems.Add(
+                    new AssetMapObjectKey(workItem.AssetsFile, asset.PathID),
+                    asset);
+
                 if (scan.Object != null)
                 {
-                    objectAssetItemDic.Add(scan.Object, asset);
                     workItem.AssetsFile.AddObject(scan.Object);
                 }
                 if (scan.Exportable)
@@ -652,6 +658,22 @@ namespace AnimeStudio
             }
         }
 
+        private static bool TryGetAssetMapObjectKey(
+            PPtr<Object> pptr,
+            out AssetMapObjectKey key)
+        {
+            if (pptr.TryGetAssetReference(
+                out var assetsFile,
+                out var pathID))
+            {
+                key = new AssetMapObjectKey(assetsFile, pathID);
+                return true;
+            }
+
+            key = default;
+            return false;
+        }
+
         private static AssetMapObjectScan ScanAssetMapObject(
             string file,
             SerializedFile assetsFile,
@@ -675,8 +697,7 @@ namespace AnimeStudio
             };
             var result = new AssetMapObjectScan
             {
-                Asset = asset,
-                Object = obj
+                Asset = asset
             };
 
             try
@@ -745,7 +766,7 @@ namespace AnimeStudio
                         break;
                     case ClassIDType.MiHoYoBinData
                         when ClassIDType.MiHoYoBinData.CanParse():
-                        result.Object = new MiHoYoBinData(objectReader);
+                        _ = new MiHoYoBinData(objectReader);
                         asset.Name = objectReader.type.ToString();
                         asset.CacheName = true;
                         result.Exportable =
@@ -755,7 +776,6 @@ namespace AnimeStudio
                         when ClassIDType.NapAssetBundleIndexAsset.CanParse():
                         var indexAsset =
                             new NapAssetBundleIndexAsset(objectReader);
-                        result.Object = indexAsset;
                         asset.Name = indexAsset.Name;
                         asset.CacheName = true;
                         result.Exportable = ClassIDType
@@ -855,6 +875,10 @@ namespace AnimeStudio
             SerializedFile AssetsFile,
             ObjectInfo ObjectInfo,
             bool SupportsIndependentReading);
+
+        private readonly record struct AssetMapObjectKey(
+            SerializedFile AssetsFile,
+            long PathID);
 
         private sealed class AssetMapObjectWorkerState : IDisposable
         {

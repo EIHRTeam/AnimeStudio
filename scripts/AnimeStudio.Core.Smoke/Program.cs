@@ -944,15 +944,11 @@ static void VerifyBatchedAssetMapObjectScanning()
             spool.Count == objectCount,
             "Batched AssetMap scanning lost or duplicated entries.");
         Assert(
-            assetsFile.Objects.Count == objectCount,
-            "Batched AssetMap scanning lost or duplicated objects.");
+            assetsFile.Objects.Count == 0,
+            "Batched AssetMap scanning retained non-PPtr target objects.");
         Assert(
-            assetsFile.Objects
-                .Select(obj => obj.m_PathID)
-                .SequenceEqual(
-                    Enumerable.Range(1, objectCount)
-                        .Select(index => (long)index)),
-            "Batched AssetMap scanning changed object order.");
+            assetsFile.ObjectsDic.Count == 0,
+            "Batched AssetMap scanning retained non-PPtr target object keys.");
     }
     finally
     {

@@ -73,6 +73,14 @@ namespace AnimeStudio
             return false;
         }
 
+        internal bool TryGetAssetReference(
+            out SerializedFile sourceFile,
+            out long pathID)
+        {
+            pathID = m_PathID;
+            return TryGetAssetsFile(out sourceFile);
+        }
+
         public bool TryGet(out T result)
         {
             if (TryGetAssetsFile(out var sourceFile))
