@@ -43,6 +43,7 @@ try
     VerifyConcurrentResourceReaders();
     VerifyConcurrentPPtrFileCache();
     VerifyBoundedParallelWorkerSlots();
+    VerifyMemoryStableWorkerBudget();
     VerifyMultiWorkerObjectParsing();
     VerifyBatchedAssetMapObjectScanning();
     VerifyBackingHashesAndCleanup();
@@ -960,6 +961,21 @@ static void VerifyBatchedAssetMapObjectScanning()
         StringCache.Clear();
         Directory.Delete(root, recursive: true);
     }
+}
+
+static void VerifyMemoryStableWorkerBudget()
+{
+    Assert(
+        WorkerBudget.GetMemoryStableWorkerCount(1) == 1,
+        "Single-worker budget changed.");
+    Assert(
+        WorkerBudget.GetMemoryStableWorkerCount(2) == 2,
+        "Two-worker budget stopped using both workers.");
+    Assert(
+        WorkerBudget.GetMemoryStableWorkerCount(4) == 3,
+        "Four-worker memory-stable budget did not reserve one worker.");
+    AssertThrows<ArgumentOutOfRangeException>(
+        () => WorkerBudget.GetMemoryStableWorkerCount(0));
 }
 
 static void VerifyAggregateMemoryBudget()

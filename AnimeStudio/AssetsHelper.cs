@@ -561,7 +561,8 @@ namespace AnimeStudio
             BoundedParallel.For(
                 0,
                 count,
-                assetsManager.WorkerCount,
+                WorkerBudget.GetMemoryStableWorkerCount(
+                    assetsManager.WorkerCount),
                 tokenSource.Token,
                 (workerIndex, index) =>
                 {

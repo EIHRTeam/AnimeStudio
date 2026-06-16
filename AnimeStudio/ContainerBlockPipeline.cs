@@ -39,7 +39,9 @@ namespace AnimeStudio
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            var workerCount = GetWorkerCount(blocks, requestedWorkers);
+            var workerCount = GetWorkerCount(
+                blocks,
+                WorkerBudget.GetMemoryStableWorkerCount(requestedWorkers));
             destination.PrepareForPositionedWrites();
             if (blocks.Count == 0)
             {

@@ -625,7 +625,7 @@ namespace AnimeStudio
         {
             var rangeWorkerCount = GetBlockFileWorkerCount(
                 ranges,
-                WorkerCount);
+                WorkerBudget.GetMemoryStableWorkerCount(WorkerCount));
             var containerWorkerCount = rangeWorkerCount > 1
                 ? 1
                 : WorkerCount;
@@ -1093,7 +1093,8 @@ namespace AnimeStudio
                         var objectParallelism = GetObjectWorkerCount(
                             fileIndex,
                             assetsFileList.Count,
-                            WorkerCount);
+                            WorkerBudget.GetMemoryStableWorkerCount(
+                                WorkerCount));
                         var parsedObjects =
                             new Object[assetsFile.m_Objects.Count];
                         var useIndependentReaders =
