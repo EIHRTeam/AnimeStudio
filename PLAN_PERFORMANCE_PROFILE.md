@@ -91,9 +91,15 @@ recommendation: keep `default` conservative; optimization lives in limit/fast.
       note; optimize-budget principle; Debian 4 CPU / 15 GiB RAM fact).
 - [x] PERF_ANALYZE_REPO.md (**user-authorized exception** to the
       "do not modify" rule; additive "落地状态" note only).
-- [ ] Debian `--mode default` vs `--mode fast` comparison; metrics in `STATUS.md`
-      (needs server authorization; not run this session).
-- [ ] Three-RID package smoke + commit/push (pending user decision on commit).
+- [x] Pre-commit adversarial review (10-agent workflow): 5 confirmed low-severity
+      issues all fixed — default now ignores all config optimization knobs;
+      `Load` degrades gracefully on malformed `ANIMESTUDIO_CONFIG_PATH`; STATUS/PLAN
+      wording corrected.
+- [x] Three-RID package smoke (osx-arm64 runtime + linux-x64/win-x64 cross-platform).
+- [x] Commit on `feat/performance-profile` (`c43f981`, excludes untracked
+      `PERF_ANALYZE_REPO.md`) + docs-finalization commit; pushed to `origin`.
+- [ ] Debian `--mode default` vs `--mode fast` small-scale comparison on the real
+      VFS package; metrics in `STATUS.md` (run as `u202f`, build on server).
 
 ## Backward compatibility (no config, no --mode = today)
 
