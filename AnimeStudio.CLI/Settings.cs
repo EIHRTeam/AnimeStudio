@@ -29,7 +29,7 @@ namespace AnimeStudio.CLI.Properties
     {
         private const string FileName = "appsettings.json";
 
-        private static readonly JsonSerializerOptions SerializerOptions = new()
+        internal static readonly JsonSerializerOptions SerializerOptions = new()
         {
             AllowTrailingCommas = true,
             PropertyNameCaseInsensitive = true,
@@ -79,9 +79,12 @@ namespace AnimeStudio.CLI.Properties
 
         public Dictionary<string, int> GetTextures() => new(texs);
 
-        public ContainerStorageOptions GetContainerStorageOptions()
+        public ContainerStorageOptions GetContainerStorageOptions() =>
+            GetContainerStorageOptions(null);
+
+        public ContainerStorageOptions GetContainerStorageOptions(long? thresholdOverrideMiB)
         {
-            var thresholdMiB = streaming?.containerMemoryThresholdMiB ?? 256;
+            var thresholdMiB = thresholdOverrideMiB ?? streaming?.containerMemoryThresholdMiB ?? 256;
             if (thresholdMiB < 0)
             {
                 throw new InvalidDataException(

@@ -52,6 +52,21 @@ seek/read operations, while FBX native export remains serialized until the
 native wrapper is proven reentrant. Keep Workstation GC: the Debian Server GC
 candidate exceeded the Phase 2 AssetMap RSS gate.
 
+A user-level performance profile at `~/.anime/config.json` plus
+`--mode default|limit|fast` lets users treat RAM/CPU as an optimization budget
+to fill, not a throttle. This file is user/runtime scope, distinct from the
+deployment-scoped `appsettings.json`. `default` (no config and no flag)
+reproduces the conservative behavior above and must keep the existing RSS
+gates. `limit` maximizes speed within the configured `maxMemoryKB`/`cpuCores`
+budget; `fast` maximizes use of the whole machine (or budget) and may exceed
+the historical Phase 2 AssetMap RSS gate, bounded by machine RAM or
+`maxMemoryKB`. Only `default`/`limit` must hold those gates. The worker count
+and the parse-worker halving are the levers: `fast`/`limit` disable the halving
+to fill the budget while `default` keeps it. No mode changes GC — the 75% heap
+hard limit still bounds RSS, RAM is a soft budget that derives worker count and
+container threshold, and an explicit `--workers` overrides the mode. The phased
+implementation is tracked in `PLAN_PERFORMANCE_PROFILE.md`.
+
 Independent container blocks use one bounded producer/worker pipeline for
 VFS, UnityFS/ENCR, Mhy, BLB, and HYG. Input bytes are read in source order,
 decode workers own their buffers, and decoded bytes are written to fixed

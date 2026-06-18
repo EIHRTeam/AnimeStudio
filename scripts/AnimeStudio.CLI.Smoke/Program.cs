@@ -24,6 +24,8 @@ try
     {
         VerifyRunSummary(publishDirectory);
         VerifyWorkerValidation(publishDirectory);
+        VerifyPerformanceConfigLoad(publishDirectory);
+        VerifyPerformanceModeWiring(publishDirectory);
         VerifyExportPathCoordination(publishDirectory);
         VerifyAssetMapFailureTiming(publishDirectory);
         VerifyExplicitTypeFilter(publishDirectory);
@@ -128,7 +130,8 @@ static void VerifyStreamingConfiguration(string publishDirectory, bool verifyRun
             ?? throw new MissingMemberException(settingsType.FullName, "Default");
         var getOptionsMethod = settingsType.GetMethod(
             "GetContainerStorageOptions",
-            BindingFlags.Public | BindingFlags.Instance)
+            BindingFlags.Public | BindingFlags.Instance,
+            Type.EmptyTypes)
             ?? throw new MissingMethodException(settingsType.FullName, "GetContainerStorageOptions");
         var options = getOptionsMethod.Invoke(defaultSettings, null)
             ?? throw new InvalidOperationException("Streaming options were not created.");
@@ -285,6 +288,210 @@ static void VerifyWorkerValidation(string publishDirectory)
     {
         Console.SetOut(originalOutput);
         Console.SetError(originalError);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyPerformanceConfigLoad(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var configType = RequireType(cliAssembly, "AnimeStudio.CLI.Properties.PerformanceConfig");
+    var loadMethod = configType.GetMethod(
+        "Load",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(configType.FullName, "Load");
+
+    var previousPath = Environment.GetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-perf-config-smoke-{Guid.NewGuid():N}");
+    var configPath = Path.Combine(temporaryDirectory, "config.json");
+
+    try
+    {
+        Directory.CreateDirectory(temporaryDirectory);
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH", configPath);
+
+        // Lowercase "limit" exercises case-insensitive enum parsing.
+        File.WriteAllText(
+            configPath,
+            "{ \"mode\": \"limit\", \"maxMemoryKB\": 14680064, \"cpuCores\": 8, "
+                + "\"workers\": 6, \"containerMemoryThresholdMiB\": 192, "
+                + "\"advanced\": { \"perWorkerMemoryEstimateKB\": 1048576 } }");
+        var config = loadMethod.Invoke(null, null)
+            ?? throw new InvalidOperationException("PerformanceConfig.Load returned null.");
+        Assert(
+            ReadProperty(config, "mode")?.ToString() == "Limit",
+            "Performance mode was not parsed case-insensitively.");
+        Assert(
+            Convert.ToInt64(ReadProperty(config, "maxMemoryKB")) == 14680064,
+            "Performance maxMemoryKB was not parsed.");
+        Assert(
+            Convert.ToInt32(ReadProperty(config, "cpuCores")) == 8,
+            "Performance cpuCores was not parsed.");
+        Assert(
+            Convert.ToInt32(ReadProperty(config, "workers")) == 6,
+            "Performance workers was not parsed.");
+        Assert(
+            Convert.ToInt64(ReadProperty(config, "containerMemoryThresholdMiB")) == 192,
+            "Performance containerMemoryThresholdMiB was not parsed.");
+        var advanced = ReadProperty(config, "advanced")
+            ?? throw new InvalidOperationException("Advanced overrides were not parsed.");
+        Assert(
+            Convert.ToInt64(ReadProperty(advanced, "perWorkerMemoryEstimateKB")) == 1048576,
+            "Advanced perWorkerMemoryEstimateKB was not parsed.");
+
+        // Corrupt JSON must degrade to an empty config without throwing.
+        File.WriteAllText(configPath, "{ not valid json ");
+        var corrupt = loadMethod.Invoke(null, null)
+            ?? throw new InvalidOperationException(
+                "PerformanceConfig.Load returned null for corrupt input.");
+        Assert(
+            ReadProperty(corrupt, "mode") is null && ReadProperty(corrupt, "maxMemoryKB") is null,
+            "Corrupt performance config did not degrade to defaults.");
+
+        // A missing file must also degrade to an empty config.
+        File.Delete(configPath);
+        var missing = loadMethod.Invoke(null, null)
+            ?? throw new InvalidOperationException(
+                "PerformanceConfig.Load returned null for a missing file.");
+        Assert(
+            ReadProperty(missing, "mode") is null,
+            "Missing performance config did not degrade to defaults.");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH", previousPath);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyPerformanceModeWiring(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var programType = RequireType(cliAssembly, "AnimeStudio.CLI.Program");
+    var mainMethod = programType.GetMethod(
+        "Main",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(programType.FullName, "Main");
+
+    var processorCount = Environment.ProcessorCount;
+    var previousConfigPath = Environment.GetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH");
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-perf-mode-smoke-{Guid.NewGuid():N}");
+    var inputDirectory = Path.Combine(temporaryDirectory, "input");
+    var outputDirectory = Path.Combine(temporaryDirectory, "output");
+    var configPath = Path.Combine(temporaryDirectory, "config.json");
+
+    string RunCli(string? configJson, params string[] extraArgs)
+    {
+        if (configJson is null)
+        {
+            if (File.Exists(configPath))
+            {
+                File.Delete(configPath);
+            }
+        }
+        else
+        {
+            File.WriteAllText(configPath, configJson);
+        }
+
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH", configPath);
+        var arguments = new List<string>
+        {
+            inputDirectory,
+            outputDirectory,
+            "--game",
+            "ArknightsEndfield",
+        };
+        arguments.AddRange(extraArgs);
+
+        var originalOutput = Console.Out;
+        using var capturedOutput = new StringWriter();
+        try
+        {
+            Console.SetOut(capturedOutput);
+            var exitCode = (int)mainMethod.Invoke(null, [arguments.ToArray()])!;
+            Assert(exitCode == 0, $"Performance-mode CLI run returned exit code {exitCode}.");
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
+
+        return capturedOutput.ToString();
+    }
+
+    try
+    {
+        Directory.CreateDirectory(inputDirectory);
+        File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+
+        // Backward compatible: no config and no --mode reproduces today's behavior
+        // (logical CPU count, memory-stable halving on).
+        var baseline = RunCli(null);
+        Assert(
+            baseline.Contains($"Using {processorCount} workers across ", StringComparison.Ordinal),
+            "Default mode did not use the logical CPU count.");
+        Assert(
+            baseline.Contains("mode=Default", StringComparison.Ordinal),
+            "Default mode was not reported.");
+        Assert(
+            baseline.Contains("parse halving on", StringComparison.Ordinal),
+            "Default mode disabled the memory-stable halving.");
+
+        // fast mode disables the halving (worker count depends on machine RAM, so
+        // only the mode and halving state are asserted to stay deterministic).
+        var fast = RunCli(null, "--mode", "fast");
+        Assert(
+            fast.Contains("mode=Fast", StringComparison.Ordinal),
+            "Fast mode was not reported.");
+        Assert(
+            fast.Contains("parse halving off", StringComparison.Ordinal),
+            "Fast mode kept the memory-stable halving.");
+
+        // CLI --mode overrides the config mode.
+        var overrideMode = RunCli("{ \"mode\": \"fast\" }", "--mode", "limit");
+        Assert(
+            overrideMode.Contains("mode=Limit", StringComparison.Ordinal),
+            "CLI --mode did not override the config mode.");
+
+        // Explicit --workers wins over the config.
+        var explicitWorkers = RunCli("{ \"mode\": \"fast\", \"workers\": 2 }", "--workers", "5");
+        Assert(
+            explicitWorkers.Contains("Using 5 workers across ", StringComparison.Ordinal),
+            "Explicit --workers did not win over the config.");
+
+        // limit mode with a tiny RAM budget clamps to at least one worker.
+        var clamped = RunCli("{ \"mode\": \"limit\", \"maxMemoryKB\": 1 }");
+        Assert(
+            clamped.Contains("Using 1 workers across ", StringComparison.Ordinal),
+            "A tiny RAM budget did not clamp the worker count to one.");
+
+        // Corrupt config degrades to default behavior without failing the run.
+        var corrupt = RunCli("{ not valid json ");
+        Assert(
+            corrupt.Contains($"Using {processorCount} workers across ", StringComparison.Ordinal),
+            "Corrupt performance config did not degrade to default behavior.");
+        Assert(
+            corrupt.Contains("mode=Default", StringComparison.Ordinal),
+            "Corrupt performance config did not fall back to default mode.");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_CONFIG_PATH", previousConfigPath);
         if (Directory.Exists(temporaryDirectory))
         {
             Directory.Delete(temporaryDirectory, true);
@@ -1199,6 +1406,15 @@ static FieldInfo RequireField(Type type, string name)
 {
     return type.GetField(name, BindingFlags.Public | BindingFlags.Instance)
         ?? throw new MissingFieldException(type.FullName, name);
+}
+
+static object? ReadProperty(object instance, string name)
+{
+    var property = instance.GetType().GetProperty(
+        name,
+        BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new MissingMemberException(instance.GetType().FullName, name);
+    return property.GetValue(instance);
 }
 
 static void Assert(bool condition, string message)

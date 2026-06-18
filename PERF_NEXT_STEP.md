@@ -22,6 +22,12 @@ priority over throughput.
 4. Do not increase resident memory to improve speed while the container-only
    run is close to the 10 GiB gate and the full Convert run peaks at
    11,474,792 KiB.
+5. Performance metrics are an optimization budget to fill for speed, not a
+   throttle. The user-level profile (`~/.anime/config.json`) plus
+   `--mode default|limit|fast` is now a separate work package
+   (`PLAN_PERFORMANCE_PROFILE.md`): `default` keeps the conservative gates,
+   while `limit`/`fast` scale workers to the budget or machine without changing
+   GC. The target machine is Debian 13 with 4 CPU cores and 15 GiB RAM.
 
 ## Immediate Phase 2 Focus
 
@@ -158,16 +164,29 @@ Do not immediately enable Server GC or lower the heap hard limit. First:
 The report's 50-55 percent heap-limit recommendation depends on Phase 4 memory
 reductions and is not safe to apply to the current 10-11 GiB baseline.
 
+The user-level performance profile and `--mode` deliberately do **not** change
+GC. `fast` only relaxes the application-level worker halving; the 75% heap hard
+limit, Workstation GC, concurrent GC, and RetainVM are unchanged, so RSS still
+has a hard ceiling. RAM in the profile is a soft budget that derives the worker
+count and container threshold, never a GC limit.
+
 ### Concurrency
 
-Do not parallelize object parsing or export in Phase 2. Container-level
-parallelism may be tested later only after:
+Superseded. The earlier guidance to defer parallelism and cap concurrency at
+two has been overridden by the implemented Phase 2 bounded multi-core work
+(per-file and object-range parsing, AssetMap scanning, and the container
+decode pipeline), which already isolates per-worker manager/stream state,
+synchronizes shared resource reads and counters, keeps FBX export serial, and
+demonstrated concurrent named workers on the 4-core Debian server.
 
-- each worker has isolated manager and stream state;
-- temporary storage accounting is thread-safe;
-- progress and logging counters are synchronized;
-- FBX export is excluded or proven thread-safe;
-- a bounded concurrency of at most two is tested on the 4-core server.
+Building on that, performance is now user-selectable through
+`~/.anime/config.json` and `--mode default|limit|fast` (see
+`PLAN_PERFORMANCE_PROFILE.md`). Performance metrics are optimization budgets to
+fill for speed, not throttles: `fast`/`limit` disable the memory-stable
+worker halving and scale workers to the machine or the configured
+`maxMemoryKB`/`cpuCores`; `default` keeps the conservative halving and the RSS
+gates. The remaining historical caution still applies only to `default`/`limit`:
+keep peak retained memory under the established gates.
 
 ### CPU and Native Optimizations
 
@@ -185,8 +204,10 @@ its exact code path materially contributes to wall-clock time.
 - Do not apply global `sysctl`, scheduler, readahead, CPU governor, THP, or
   swap changes as repository defaults. They are host-specific experiments and
   require a captured baseline plus rollback instructions.
-- Do not introduce object-level parallelism, unbounded channels, or a complete
-  producer-consumer rewrite during the AssetMap spool conversion.
+- (Superseded) The earlier "do not introduce object-level parallelism" rule
+  applied to the initial AssetMap spool conversion only. Bounded object-range
+  parallelism has since been implemented under the global worker budget;
+  unbounded channels and a wholesale producer-consumer rewrite remain rejected.
 - Do not claim the source report's estimated multipliers as achieved gains.
 
 ## Suggested Delivery Order

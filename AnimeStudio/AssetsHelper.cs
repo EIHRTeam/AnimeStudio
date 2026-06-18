@@ -58,6 +58,14 @@ namespace AnimeStudio
             assetsManager.ContainerStorageOptions = options ?? new ContainerStorageOptions();
         }
 
+        // Process-wide parse-worker halving policy. false lets fast/limit modes
+        // fill the requested worker count; true keeps the default memory-stable
+        // halving. Affects every WorkerBudget consumer at once.
+        public static void SetParseWorkerHalving(bool enabled)
+        {
+            WorkerBudget.ConfigureHalving(enabled);
+        }
+
         public static string[] GetMaps()
         {
             Directory.CreateDirectory(MapName);

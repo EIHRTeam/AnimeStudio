@@ -50,18 +50,29 @@ namespace AnimeStudio.CLI
                 Logger.FileLogging = Settings.Default.enableFileLogging;
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
+
+                var performance = PerformanceResolver.Resolve(
+                    o.Mode,
+                    o.WorkersExplicitlySet ? o.Workers : null,
+                    PerformanceConfig.Load(),
+                    Environment.ProcessorCount,
+                    GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024,
+                    Settings.Default.streaming?.containerMemoryThresholdMiB ?? 256);
+
                 AssetsHelper.SetLargeObjectHeapCompactionInterval(4);
-                AssetsHelper.SetWorkerCount(o.Workers);
+                AssetsHelper.SetWorkerCount(performance.EffectiveWorkers);
+                AssetsHelper.SetParseWorkerHalving(performance.HalveParseWorkers);
                 ThreadPool.GetMinThreads(
                     out var minimumWorkerThreads,
                     out var minimumCompletionPortThreads);
-                if (minimumWorkerThreads < o.Workers)
+                if (minimumWorkerThreads < performance.MinimumWorkerThreads)
                 {
                     ThreadPool.SetMinThreads(
-                        o.Workers,
+                        performance.MinimumWorkerThreads,
                         minimumCompletionPortThreads);
                 }
-                var containerStorageOptions = Settings.Default.GetContainerStorageOptions();
+                var containerStorageOptions = Settings.Default.GetContainerStorageOptions(
+                    performance.ContainerThresholdMiB);
                 AssetsHelper.SetContainerStorageOptions(containerStorageOptions);
 
                 if (Settings.Default.scrapeMonos)
@@ -149,11 +160,12 @@ namespace AnimeStudio.CLI
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
                 assetsManager.LargeObjectHeapCompactionInterval = 4;
-                assetsManager.WorkerCount = o.Workers;
+                assetsManager.WorkerCount = performance.EffectiveWorkers;
                 assetsManager.ContainerStorageOptions = containerStorageOptions;
                 Logger.Info(
-                    $"Using {o.Workers} workers across " +
+                    $"Using {performance.EffectiveWorkers} workers across " +
                     $"{Environment.ProcessorCount} logical processors.");
+                Logger.Info($"Performance mode: {performance.Explanation}.");
                 o.Output.Create();
 
                 if (o.Key != default)
@@ -234,7 +246,7 @@ namespace AnimeStudio.CLI
                                     exportableAssets,
                                     o.GroupAssetsType,
                                     o.AssetExportType,
-                                    o.Workers);
+                                    performance.EffectiveWorkers);
                             }
                         }
                         catch (OutOfMemoryException)

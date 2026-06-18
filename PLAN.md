@@ -98,6 +98,12 @@ preserving existing schemas, filter order, and output compatibility.
   limit, and retained VM policy.
 - Remove `Task.Run(...).Wait()` wrappers that only move serial work to another
   thread.
+- An optional user-level performance profile (`~/.anime/config.json`) and
+  `--mode default|limit|fast` may relax this worker budget: `fast`/`limit`
+  disable the parse-worker halving to fill a RAM/CPU budget while `default`
+  keeps it. No mode changes GC, and `default` preserves every gate below. The
+  phased plan and acceptance for this cross-phase capability live in
+  `PLAN_PERFORMANCE_PROFILE.md`, not here.
 
 ## 7. Automated Acceptance
 
@@ -116,6 +122,10 @@ preserving existing schemas, filter order, and output compatibility.
   multi-worker object parsing without duplicate or missing objects.
 - Smoke coverage proves concurrent PPtr external-file resolution uses one
   atomic, case-insensitive cache entry per CAB name.
+- Smoke coverage proves performance-profile behavior (tracked in
+  `PLAN_PERFORMANCE_PROFILE.md`): config parse and tolerance, the WorkerBudget
+  halving toggle, `--mode` over config, explicit `--workers` precedence,
+  default-mode backward compatibility, and the worker-count clamp.
 - Smoke coverage proves multi-worker and single-worker container block
   decoding, positioned-write ordering, cancellation, decoder-failure
   propagation, and temporary-file cleanup.

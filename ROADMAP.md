@@ -89,4 +89,12 @@ The detailed implementation and acceptance criteria are in `PLAN.md`.
   transfer is an exception for GitHub outages or uncommittable diagnostic work
   and its reason must be recorded in `STATUS.md`.
 - `Unknown ClassIDType 1186182244` is outside the streaming roadmap.
+- The user-level performance profile (`~/.anime/config.json`) and
+  `--mode default|limit|fast` are a cross-phase capability. Performance metrics
+  are optimization budgets to fill, not throttles. `default`/`limit` must
+  preserve the per-phase RSS gates; `fast` may exceed them within machine RAM
+  or the configured `maxMemoryKB`. No mode changes the GC configuration (the
+  75% heap hard limit still bounds RSS); RAM is a soft budget that derives the
+  worker count and container threshold; explicit `--workers` overrides the
+  mode. Phased details are in `PLAN_PERFORMANCE_PROFILE.md`.
 - Every session must update `STATUS.md`.

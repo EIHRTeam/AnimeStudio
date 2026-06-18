@@ -5,6 +5,7 @@ using System.CommandLine.Parsing;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using AnimeStudio.CLI.Properties;
 
 namespace AnimeStudio.CLI
 {
@@ -34,6 +35,7 @@ namespace AnimeStudio.CLI
             rootCommand.Options.Add(options.GroupAssetsType);
             rootCommand.Options.Add(options.AssetExportType);
             rootCommand.Options.Add(options.Workers);
+            rootCommand.Options.Add(options.Mode);
             rootCommand.Options.Add(options.Key);
             rootCommand.Options.Add(options.AIFile);
             rootCommand.Options.Add(options.DummyDllFolder);
@@ -60,6 +62,8 @@ namespace AnimeStudio.CLI
         public AssetGroupOption GroupAssetsType { get; set; }
         public ExportType AssetExportType { get; set; }
         public int Workers { get; set; }
+        public bool WorkersExplicitlySet { get; set; }
+        public PerformanceMode? Mode { get; set; }
         public byte Key { get; set; }
         public FileInfo AIFile { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
@@ -82,6 +86,7 @@ namespace AnimeStudio.CLI
         public readonly Option<AssetGroupOption> GroupAssetsType;
         public readonly Option<ExportType> AssetExportType;
         public readonly Option<int> Workers;
+        public readonly Option<PerformanceMode?> Mode;
         public readonly Option<byte> Key;
         public readonly Option<FileInfo> AIFile;
         public readonly Option<DirectoryInfo> DummyDllFolder;
@@ -154,6 +159,15 @@ namespace AnimeStudio.CLI
                 Description = "Maximum parsing and export workers. Defaults to the logical CPU count.",
                 DefaultValueFactory = _ => Environment.ProcessorCount
             };
+            Mode = new Option<PerformanceMode?>("--mode")
+            {
+                Description = "Performance mode: fast | limit | default. "
+                    + "Overrides the mode in ~/.anime/config.json. "
+                    + "fast maximizes use of the machine; limit stays within the "
+                    + "configured RAM/CPU budget; default keeps the conservative behavior."
+                // No DefaultValueFactory: an unset value stays null so an explicit
+                // "--mode default" can be distinguished from no flag.
+            };
             Key = new Option<byte>("--key")
             {
                 Description = "XOR key to decrypt MiHoYoBinData.",
@@ -212,6 +226,8 @@ namespace AnimeStudio.CLI
                 GroupAssetsType = parseResult.GetValue(GroupAssetsType),
                 AssetExportType = parseResult.GetValue(AssetExportType),
                 Workers = parseResult.GetValue(Workers),
+                WorkersExplicitlySet = parseResult.GetResult(Workers) is { Tokens.Count: > 0 },
+                Mode = parseResult.GetValue(Mode),
                 Key = parseResult.GetValue(Key),
                 AIFile = parseResult.GetValue(AIFile),
                 DummyDllFolder = parseResult.GetValue(DummyDllFolder),

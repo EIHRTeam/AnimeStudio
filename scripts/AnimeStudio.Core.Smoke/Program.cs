@@ -44,6 +44,7 @@ try
     VerifyConcurrentPPtrFileCache();
     VerifyBoundedParallelWorkerSlots();
     VerifyMemoryStableWorkerBudget();
+    VerifyWorkerBudgetHalvingToggle();
     VerifyMultiWorkerObjectParsing();
     VerifyBatchedAssetMapObjectScanning();
     VerifyBackingHashesAndCleanup();
@@ -975,6 +976,43 @@ static void VerifyMemoryStableWorkerBudget()
         "Eight-worker memory-stable budget did not keep bounded multi-core work.");
     AssertThrows<ArgumentOutOfRangeException>(
         () => WorkerBudget.GetMemoryStableWorkerCount(0));
+}
+
+static void VerifyWorkerBudgetHalvingToggle()
+{
+    try
+    {
+        // fast/limit modes disable halving: the requested workers are used in full.
+        WorkerBudget.ConfigureHalving(false);
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(8) == 8,
+            "Disabled halving did not use the full eight workers.");
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(4) == 4,
+            "Disabled halving did not use the full four workers.");
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(2) == 2,
+            "Disabled halving changed the two-worker count.");
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(1) == 1,
+            "Disabled halving changed the single-worker count.");
+        AssertThrows<ArgumentOutOfRangeException>(
+            () => WorkerBudget.GetMemoryStableWorkerCount(0));
+
+        // Re-enabling restores the default memory-stable halving.
+        WorkerBudget.ConfigureHalving(true);
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(8) == 4,
+            "Re-enabled halving did not restore the eight-worker cap.");
+        Assert(
+            WorkerBudget.GetMemoryStableWorkerCount(4) == 2,
+            "Re-enabled halving did not restore the four-worker cap.");
+    }
+    finally
+    {
+        // Process-wide static: restore the default so later checks are unaffected.
+        WorkerBudget.ConfigureHalving(true);
+    }
 }
 
 static void VerifyAggregateMemoryBudget()
