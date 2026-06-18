@@ -98,8 +98,15 @@ recommendation: keep `default` conservative; optimization lives in limit/fast.
 - [x] Three-RID package smoke (osx-arm64 runtime + linux-x64/win-x64 cross-platform).
 - [x] Commit on `feat/performance-profile` (`c43f981`, excludes untracked
       `PERF_ANALYZE_REPO.md`) + docs-finalization commit; pushed to `origin`.
-- [ ] Debian `--mode default` vs `--mode fast` small-scale comparison on the real
-      VFS package; metrics in `STATUS.md` (run as `u202f`, build on server).
+- [x] Debian `--mode default` vs `--mode fast` comparison on the baseline VFS
+      `.chk` (run as `u202f`, built on server from `76b5f7d`): fast CPU 204% vs
+      default 131%, wall 7:41 vs 10:05 (−24%), both peak RSS under the 6,957,772
+      KiB gate, GC unchanged, output SHA256 identical after volatile
+      normalization (283,596 assets). Metrics in `STATUS.md`.
+
+**Feature complete.** All phases delivered and validated on the real machine;
+default stays conservative, fast/limit fill the budget without changing output
+or GC. A PR can be opened from `feat/performance-profile`.
 
 ## Backward compatibility (no config, no --mode = today)
 
