@@ -44,17 +44,23 @@ namespace AnimeStudio.CLI
             if (Properties.Settings.Default.convertTexture)
             {
                 var type = Properties.Settings.Default.convertType;
+                var __tr = ExportProfiler.Start();
                 if (!TryExportFile(exportPath, item, "." + type.ToString().ToLower(), out var exportFullPath))
                     return false;
+                ExportProfiler.Add("Texture2D", "reserve", __tr);
+                var __td = ExportProfiler.Start();
                 var image = m_Texture2D.ConvertToImage(true);
+                ExportProfiler.Add("Texture2D", "decode", __td);
                 if (image == null)
                     return false;
                 using (image)
                 {
+                    var __tw = ExportProfiler.Start();
                     using (var file = File.OpenWrite(exportFullPath))
                     {
                         image.WriteToStream(file, type);
                     }
+                    ExportProfiler.Add("Texture2D", "encode_write", __tw);
                     return true;
                 }
             }
@@ -136,6 +142,10 @@ namespace AnimeStudio.CLI
 
             if (Properties.Settings.Default.scrapeMonos)
             {
+                // scrapeMonos touches the shared reader (GetRawData) and shared
+                // HashSets; keep it fully serialized under the type lock.
+                lock (MonoBehaviourExportSync)
+                {
                 var s = m_MonoBehaviour.GetRawData();
                 var cleanedBytes = new List<byte>(s.Length);
                 for (int i = 0; i < s.Length; i++)
@@ -201,19 +211,38 @@ namespace AnimeStudio.CLI
 
                     idx = Search(s_cleaned, idx + 4);
                 }
+                }
             }
             else
             {
+                // Option A deadlock fix: reserve the output path BEFORE acquiring the
+                // type lock, so MonoBehaviourExportSync never wraps WaitForOrder. The
+                // lock now guards only the shared-reader ToType read; JSON serialize
+                // and file write run unlocked (they touch no shared state).
+                var __tr = ExportProfiler.Start();
                 if (!TryExportFile(exportPath, item, ".json", out var exportFullPath))
                     return false;
-                var type = m_MonoBehaviour.ToType();
-                if (type == null)
+                ExportProfiler.Add("MonoBehaviour", "reserve", __tr);
+                System.Collections.Specialized.OrderedDictionary type;
+                var __lw = ExportProfiler.Start();
+                lock (MonoBehaviourExportSync)
                 {
-                    var m_Type = Studio.MonoBehaviourToTypeTree(m_MonoBehaviour);
-                    type = m_MonoBehaviour.ToType(m_Type);
+                    ExportProfiler.Add("MonoBehaviour", "lockwait", __lw);
+                    var __tt = ExportProfiler.Start();
+                    type = m_MonoBehaviour.ToType();
+                    if (type == null)
+                    {
+                        var m_Type = Studio.MonoBehaviourToTypeTree(m_MonoBehaviour);
+                        type = m_MonoBehaviour.ToType(m_Type);
+                    }
+                    ExportProfiler.Add("MonoBehaviour", "totype", __tt);
                 }
+                var __ts = ExportProfiler.Start();
                 var str = JsonConvert.SerializeObject(type, Formatting.Indented);
+                ExportProfiler.Add("MonoBehaviour", "serialize", __ts);
+                var __tw = ExportProfiler.Start();
                 File.WriteAllText(exportFullPath, str);
+                ExportProfiler.Add("MonoBehaviour", "write", __tw);
             }
 
              return true;
@@ -396,17 +425,23 @@ namespace AnimeStudio.CLI
         public static bool ExportSprite(AssetItem item, string exportPath)
         {
             var type = Properties.Settings.Default.convertType;
+            var __tr = ExportProfiler.Start();
             if (!TryExportFile(exportPath, item, "." + type.ToString().ToLower(), out var exportFullPath))
                 return false;
+            ExportProfiler.Add("Sprite", "reserve", __tr);
+            var __td = ExportProfiler.Start();
             var image = ((Sprite)item.Asset).GetImage();
+            ExportProfiler.Add("Sprite", "getimage", __td);
             if (image != null)
             {
                 using (image)
                 {
+                    var __tw = ExportProfiler.Start();
                     using (var file = File.OpenWrite(exportFullPath))
                     {
                         image.WriteToStream(file, type);
                     }
+                    ExportProfiler.Add("Sprite", "encode_write", __tw);
                     return true;
                 }
             }
@@ -500,9 +535,11 @@ namespace AnimeStudio.CLI
             if (!TryExportFile(exportPath, item, ".anim", out var exportFullPath))
                 return false;
             var str = m_AnimationClip.Convert();
-            if (string.IsNullOrEmpty(str)) 
+            if (string.IsNullOrEmpty(str))
                 return false;
+            var __w = ConvertProfiler.Start();
             File.WriteAllText(exportFullPath, str);
+            ConvertProfiler.Add("AnimClip/write", __w, str.Length);
             return true;
         }
 
@@ -526,6 +563,9 @@ namespace AnimeStudio.CLI
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
 
+            // Option A: folder reserved above (unlocked); lock only the FBX conversion.
+            lock (FbxExportSync)
+            {
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -550,6 +590,7 @@ namespace AnimeStudio.CLI
                 }
             }
             ExportFbx(convert, exportFullPath);
+            }
             return true;
         }
 
@@ -564,7 +605,11 @@ namespace AnimeStudio.CLI
                 return false;
 
             var m_GameObject = (GameObject)item.Asset;
-            return ExportGameObject(m_GameObject, exportFullPath, animationList);
+            // Option A: folder reserved above (unlocked); lock only the native FBX work.
+            lock (FbxExportSync)
+            {
+                return ExportGameObject(m_GameObject, exportFullPath, animationList);
+            }
         }
 
         public static bool ExportGameObject(GameObject gameObject, string exportPath, List<AssetItem> animationList = null)
@@ -695,13 +740,18 @@ namespace AnimeStudio.CLI
 
         public static bool ExportConvertFile(AssetItem item, string exportPath)
         {
+            var __total = ExportProfiler.Start();
+            var __r = ExportConvertFileImpl(item, exportPath);
+            ExportProfiler.Add(item.Type.ToString(), "total", __total);
+            return __r;
+        }
+
+        private static bool ExportConvertFileImpl(AssetItem item, string exportPath)
+        {
             switch (item.Type)
             {
                 case ClassIDType.GameObject:
-                    lock (FbxExportSync)
-                    {
-                        return ExportGameObject(item, exportPath);
-                    }
+                    return ExportGameObject(item, exportPath);
                 case ClassIDType.Texture2D:
                     return ExportTexture2D(item, exportPath);
                 case ClassIDType.AudioClip:
@@ -711,10 +761,7 @@ namespace AnimeStudio.CLI
                 case ClassIDType.TextAsset:
                     return ExportTextAsset(item, exportPath);
                 case ClassIDType.MonoBehaviour:
-                    lock (MonoBehaviourExportSync)
-                    {
-                        return ExportMonoBehaviour(item, exportPath);
-                    }
+                    return ExportMonoBehaviour(item, exportPath);
                 case ClassIDType.Font:
                     return ExportFont(item, exportPath);
                 case ClassIDType.Mesh:
@@ -726,10 +773,7 @@ namespace AnimeStudio.CLI
                 case ClassIDType.Sprite:
                     return ExportSprite(item, exportPath);
                 case ClassIDType.Animator:
-                    lock (FbxExportSync)
-                    {
-                        return ExportAnimator(item, exportPath);
-                    }
+                    return ExportAnimator(item, exportPath);
                 case ClassIDType.AnimationClip:
                     return ExportAnimationClip(item, exportPath);
                 case ClassIDType.MiHoYoBinData:

@@ -11,7 +11,10 @@ namespace AnimeStudio.CLI
         bool HalveParseWorkers,
         long ContainerThresholdMiB,
         int MinimumWorkerThreads,
-        string Explanation);
+        string Explanation,
+        // PNG encoder for limit/fast (null in default => baseline SaveAsPng()).
+        int? PngCompressionLevel = null,
+        string PngFilterMethod = null);
 
     // Central resolver that turns (CLI --mode/--workers, user config, machine
     // facts) into effective settings. Performance metrics are treated as an
@@ -94,19 +97,34 @@ namespace AnimeStudio.CLI
             var minimumWorkerThreads =
                 config.advanced?.minimumWorkerThreads is { } mt && mt >= 1 ? mt : effectiveWorkers;
 
+            // limit/fast use the faster PNG encoder. Default level 1 (BestSpeed) +
+            // Sub filter measured 4.0x faster encode at +29% size on the Debian
+            // texture corpus, and Sub is both faster and smaller than None there.
+            // Config can override either; default mode never sets these (baseline).
+            var pngLevel = config.advanced?.pngCompressionLevel is { } pl && pl >= 0 && pl <= 9
+                ? pl
+                : 1;
+            var pngFilter = !string.IsNullOrWhiteSpace(config.advanced?.pngFilterMethod)
+                ? config.advanced.pngFilterMethod
+                : "sub";
+
             return new ResolvedPerformance(
                 mode,
                 effectiveWorkers,
                 halveParseWorkers,
                 containerThresholdMiB,
                 minimumWorkerThreads,
-                Describe(mode, effectiveWorkers, halveParseWorkers, containerThresholdMiB, minimumWorkerThreads));
+                Describe(mode, effectiveWorkers, halveParseWorkers, containerThresholdMiB, minimumWorkerThreads, pngLevel, pngFilter),
+                pngLevel,
+                pngFilter);
         }
 
         private static string Describe(
-            PerformanceMode mode, int workers, bool halve, long thresholdMiB, int minThreads) =>
+            PerformanceMode mode, int workers, bool halve, long thresholdMiB, int minThreads,
+            int? pngLevel = null, string pngFilter = null) =>
             $"mode={mode}; workers={workers} (parse halving {(halve ? "on" : "off")}); "
-            + $"container budget {thresholdMiB} MiB; min threads {minThreads}";
+            + $"container budget {thresholdMiB} MiB; min threads {minThreads}"
+            + (pngLevel is { } pl ? $"; png level {pl}+{pngFilter}" : "; png baseline");
 
         private static int Clamp(int value) => Math.Max(1, value);
 

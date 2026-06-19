@@ -146,15 +146,22 @@ namespace AnimeStudio
         {
             if (!clip.m_Legacy || clip.m_MuscleClip != null)
             {
+                var __p = ConvertProfiler.Start();
                 var converter = AnimationClipConverter.Process(clip);
+                ConvertProfiler.Add("AnimClip/process", __p);
+                var __u = ConvertProfiler.Start();
                 clip.m_RotationCurves = converter.Rotations.Union(clip.m_RotationCurves).ToList();
                 clip.m_EulerCurves = converter.Eulers.Union(clip.m_EulerCurves).ToList();
                 clip.m_PositionCurves = converter.Translations.Union(clip.m_PositionCurves).ToList();
                 clip.m_ScaleCurves = converter.Scales.Union(clip.m_ScaleCurves).ToList();
                 clip.m_FloatCurves = converter.Floats.Union(clip.m_FloatCurves).ToList();
                 clip.m_PPtrCurves = converter.PPtrs.Union(clip.m_PPtrCurves).ToList();
+                ConvertProfiler.Add("AnimClip/union", __u);
             }
-            return ConvertSerializedAnimationClip(clip);
+            var __y = ConvertProfiler.Start();
+            var result = ConvertSerializedAnimationClip(clip);
+            ConvertProfiler.Add("AnimClip/yaml_emit", __y, result?.Length ?? 0);
+            return result;
         }
         public static string ConvertSerializedAnimationClip(AnimationClip animationClip)
         {
@@ -162,10 +169,17 @@ namespace AnimeStudio
             using (var stringWriter = new StringWriter(sb))
             {
                 YAMLWriter writer = new YAMLWriter();
+                var __dom = ConvertProfiler.Start();
                 YAMLDocument doc = ExportYAMLDocument(animationClip);
+                ConvertProfiler.Add("AnimClip/yaml_dom", __dom);
                 writer.AddDocument(doc);
+                var __wr = ConvertProfiler.Start();
                 writer.Write(stringWriter);
-                return sb.ToString();
+                ConvertProfiler.Add("AnimClip/yaml_write", __wr);
+                var __ts = ConvertProfiler.Start();
+                var s = sb.ToString();
+                ConvertProfiler.Add("AnimClip/yaml_tostring", __ts, s.Length);
+                return s;
             }
         }
 

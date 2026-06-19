@@ -544,6 +544,7 @@ namespace AnimeStudio.CLI
             var nextAssetIndex = -1;
             var coordinator = new ExportPathCoordinator();
             var activeWorkers = Math.Min(workerCount, toExportCount);
+            var __exportWall = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 Parallel.For(
@@ -613,6 +614,8 @@ namespace AnimeStudio.CLI
                 throw;
             }
 
+            __exportWall.Stop();
+
             var statusText = exportedCount == 0 ? "Nothing exported." : $"Finished exporting {exportedCount} assets.";
 
             if (toExportCount > exportedCount)
@@ -621,6 +624,8 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+            ExportProfiler.Report(System.Console.Out, __exportWall.Elapsed.TotalMilliseconds);
+            ConvertProfiler.Report(System.Console.Out);
         }
 
         private static string GetExportPath(

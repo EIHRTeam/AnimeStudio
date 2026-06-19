@@ -57,7 +57,9 @@ namespace AnimeStudio
         {
             var m_Clip = animationClip.m_MuscleClip.m_Clip;
             var bindings = animationClip.m_ClipBindingConstant;
+            var __f = ConvertProfiler.Start();
             var tos = animationClip.FindTOS();
+            ConvertProfiler.Add("AnimClip/findtos", __f);
 
             var streamedFrames = m_Clip.m_StreamedClip.ReadData();
             var lastDenseFrame = m_Clip.m_DenseClip.m_FrameCount / m_Clip.m_DenseClip.m_SampleRate;
@@ -193,7 +195,9 @@ namespace AnimeStudio
         private float ProcessACLClip(Clip clip, AnimationClipBindingConstant bindings, Dictionary<uint, string> tos)
         {
             var acl = clip.m_ACLClip;
+            var __a = ConvertProfiler.Start();
             acl.Process(game, out var values, out var times);
+            ConvertProfiler.Add("AnimClip/acl_native", __a);
             float[] slopeValues = new float[4]; // no slopes - 0 values
 
             int frameCount = times.Length;

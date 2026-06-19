@@ -101,6 +101,20 @@ namespace AnimeStudio
 		public Emitter Write(float value)
 		{
 			WriteDelayed();
+			// TextWriter.Write(float) allocates a string per value via
+			// value.ToString(FormatProvider). Format into a stack span instead
+			// (same null/CurrentCulture provider => byte-identical output) and write
+			// the span, which StringWriter appends to its StringBuilder with no
+			// intermediate string allocation. 32 chars hold any float/double
+			// shortest-roundtrip form; the fallback keeps correctness if TryFormat
+			// ever returns false. Verified byte-identical on Debian (anim hash
+			// unchanged with the allocation-free path on vs off).
+			Span<char> buf = stackalloc char[32];
+			if (value.TryFormat(buf, out int written))
+			{
+				m_stream.Write(buf[..written]);
+				return this;
+			}
 			m_stream.Write(value);
 			return this;
 		}
@@ -108,6 +122,12 @@ namespace AnimeStudio
 		public Emitter Write(double value)
 		{
 			WriteDelayed();
+			Span<char> buf = stackalloc char[32];
+			if (value.TryFormat(buf, out int written))
+			{
+				m_stream.Write(buf[..written]);
+				return this;
+			}
 			m_stream.Write(value);
 			return this;
 		}

@@ -29,6 +29,16 @@ namespace AnimeStudio.CLI.Properties
         // Escape hatch that overrides the per-mode parse-worker halving policy.
         // Null follows the mode (fast/limit disable halving, default keeps it).
         public bool? halveParseWorkers { get; set; }
+
+        // PNG DEFLATE level (0-9) used by the faster limit/fast encoder. Null
+        // follows the mode default (level 1 = BestSpeed). Ignored in default mode
+        // (which always emits bit-identical baseline PNGs).
+        public int? pngCompressionLevel { get; set; }
+
+        // PNG row filter for the faster encoder: none|sub|up|average|paeth|adaptive.
+        // Null follows the mode default (sub, which is both faster and smaller than
+        // none on quantized texture data). Ignored in default mode.
+        public string pngFilterMethod { get; set; }
     }
 
     // User-level performance profile loaded from ~/.anime/config.json. Every

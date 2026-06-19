@@ -62,6 +62,9 @@ namespace AnimeStudio.CLI
                 AssetsHelper.SetLargeObjectHeapCompactionInterval(4);
                 AssetsHelper.SetWorkerCount(performance.EffectiveWorkers);
                 AssetsHelper.SetParseWorkerHalving(performance.HalveParseWorkers);
+                // default mode leaves these null => bit-identical baseline PNG.
+                ImageExportSettings.ConfigurePng(
+                    performance.PngCompressionLevel, performance.PngFilterMethod);
                 ThreadPool.GetMinThreads(
                     out var minimumWorkerThreads,
                     out var minimumCompletionPortThreads);
