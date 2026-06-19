@@ -21,6 +21,20 @@ namespace AnimeStudio.CLI
         private static int fbxUnavailableWarningLogged;
         private static int optimizedAnimatorWarningLogged;
 
+        // AnimationClips skipped because ACL animation decompression is
+        // unsupported on this platform (the native ACL library ships for Windows
+        // only). Each one also logs a per-clip warning; this counter feeds an
+        // aggregated, always-visible run summary. Reset at each export run.
+        internal static int AclUnsupportedSkips;
+
+        // Assets dropped because their output name was already taken (duplicate
+        // asset names within the run, or a pre-existing file) while
+        // --allow_duplicates is off. This is the genuinely silent data-loss path:
+        // TryExportFile returns false and the per-type exporter returns without
+        // writing or logging anything, so the output is quietly incomplete.
+        // Reported as an always-visible aggregate. Reset at each export run.
+        internal static int DuplicateNameDrops;
+
         internal static IDisposable BeginAssetExport(
             ExportPathCoordinator coordinator,
             int ordinal,
@@ -461,12 +475,20 @@ namespace AnimeStudio.CLI
             var fileName = FixFileName(item.Text);
             if (currentReservation != null)
             {
-                return currentReservation.TryReserveFile(
+                if (currentReservation.TryReserveFile(
                     dir,
                     fileName,
                     extension,
                     Properties.Settings.Default.allowDuplicates,
-                    out fullPath);
+                    out fullPath))
+                {
+                    return true;
+                }
+
+                // TryReserveFile only fails when the name is already taken and
+                // --allow_duplicates is off: the asset is dropped without a log.
+                Interlocked.Increment(ref DuplicateNameDrops);
+                return false;
             }
 
             fullPath = Path.Combine(dir, $"{fileName}{extension}");
@@ -486,6 +508,8 @@ namespace AnimeStudio.CLI
                     }
                 }
             }
+
+            Interlocked.Increment(ref DuplicateNameDrops);
             return false;
         }
 
@@ -525,6 +549,7 @@ namespace AnimeStudio.CLI
             var m_AnimationClip = (AnimationClip)item.Asset;
             if (!PlatformCapabilities.TryGetAclAnimationDecompressionSupport(m_AnimationClip, Studio.Game, out var reason))
             {
+                Interlocked.Increment(ref AclUnsupportedSkips);
                 Logger.Warning(
                     $"Skipping ACL animation resource \"{item.Text}\" " +
                     $"(PathID {item.m_PathID}, file {item.SourceFile.fileName}) " +

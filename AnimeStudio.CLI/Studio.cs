@@ -541,6 +541,8 @@ namespace AnimeStudio.CLI
 
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
+            Exporter.AclUnsupportedSkips = 0;
+            Exporter.DuplicateNameDrops = 0;
             var nextAssetIndex = -1;
             var coordinator = new ExportPathCoordinator();
             var activeWorkers = Math.Min(workerCount, toExportCount);
@@ -624,6 +626,34 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+
+            // Always-visible (stderr, bypassing Logger/--logger_flags) summary of
+            // why output is incomplete. Parallel.For has joined, so these reads are
+            // safe. Duplicate-name drops are silent at the per-asset level (no log
+            // at all), so an aggregate is the only place the operator learns that
+            // data was lost; ACL skips also warn per-clip but are easy to miss.
+            var dupDrops = Exporter.DuplicateNameDrops;
+            var aclSkips = Exporter.AclUnsupportedSkips;
+            if (dupDrops > 0 || aclSkips > 0)
+            {
+                System.Console.Error.WriteLine("WARNING: exported output is INCOMPLETE:");
+                if (dupDrops > 0)
+                {
+                    System.Console.Error.WriteLine(
+                        $"  - {dupDrops} asset(s) were dropped because their output name was already "
+                        + "taken (duplicate asset names, or a pre-existing file) and \"allowDuplicates\" "
+                        + "is off. Their data is NOT in the output; set \"allowDuplicates\": true in "
+                        + "appsettings.json to write all of them under distinct names.");
+                }
+
+                if (aclSkips > 0)
+                {
+                    System.Console.Error.WriteLine(
+                        $"  - {aclSkips} AnimationClip(s) were skipped because ACL animation decompression "
+                        + "is unsupported on this platform (the native ACL library ships for Windows only).");
+                }
+            }
+
             ExportProfiler.Report(System.Console.Out, __exportWall.Elapsed.TotalMilliseconds);
             ConvertProfiler.Report(System.Console.Out);
         }
