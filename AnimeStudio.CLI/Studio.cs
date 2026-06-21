@@ -656,6 +656,7 @@ namespace AnimeStudio.CLI
 
             ExportProfiler.Report(System.Console.Out, __exportWall.Elapsed.TotalMilliseconds);
             ConvertProfiler.Report(System.Console.Out);
+            DirectYamlSelfCheck.Report(System.Console.Out);
         }
 
         private static string GetExportPath(

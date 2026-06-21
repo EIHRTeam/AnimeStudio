@@ -33,6 +33,7 @@ try
     VerifyEndfieldTosData(GameType.ArknightsEndfieldCB3);
     VerifyTraditionalTosMap();
     VerifyControllerSizeMismatch();
+    VerifyDirectYamlKeyframeStreaming();
     VerifyNegativeArrayLength();
     VerifyObjectBoundedArrayLength();
     VerifyObjectBoundedStringLength();
@@ -2432,6 +2433,80 @@ static TException AssertThrows<TException>(Action action)
     }
 
     throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
+}
+
+// Guards the experimental AnimationClip keyframe direct-write (DOM-bypass) path: the
+// streaming emitter must produce byte-identical YAML to the DOM emitter for every curve
+// leaf type and version branch. This is the same invariant the in-process self-check
+// (ANIMESTUDIO_EXP_DIRECT_YAML=verify) enforces at runtime, pinned here as a fast,
+// asset-free regression test.
+static void VerifyDirectYamlKeyframeStreaming()
+{
+    // 2019.x exercises the weighted keyframe fields (weightedMode/inWeight/outWeight) and
+    // keyframe serializedVersion 3; 5.4 exercises the no-weights branch (serializedVersion 2)
+    // plus m_RotationOrder (5.3+).
+    int[][] versions = [[2019, 4, 31, 0], [5, 4, 0, 0]];
+
+    var vCurve = new AnimationCurve<Vector3>();
+    vCurve.m_Curve.Add(new Keyframe<Vector3>(0f, new Vector3(1f, 2f, 3f), Vector3.Zero, Vector3.Zero, Vector3.One));
+    vCurve.m_Curve.Add(new Keyframe<Vector3>(0.5f, new Vector3(-1.5f, 0f, 100.25f), new Vector3(0.1f, 0.2f, 0.3f), new Vector3(0.4f, 0.5f, 0.6f), Vector3.One));
+
+    var qCurve = new AnimationCurve<Quaternion>();
+    qCurve.m_Curve.Add(new Keyframe<Quaternion>(0f, new Quaternion(0f, 0f, 0f, 1f), Quaternion.Zero, Quaternion.Zero, Quaternion.Zero));
+    qCurve.m_Curve.Add(new Keyframe<Quaternion>(0.25f, new Quaternion(0.1f, 0.2f, 0.3f, 0.4f), Quaternion.Zero, Quaternion.Zero, Quaternion.Zero));
+
+    var fCurve = new AnimationCurve<Float>();
+    fCurve.m_Curve.Add(new Keyframe<Float>(0f, 1.5f, 0f, 0f, 0.3333333f));
+    fCurve.m_Curve.Add(new Keyframe<Float>(1f, -2.25f, 3f, 4f, 0.3333333f));
+
+    var emptyCurve = new AnimationCurve<Vector3>();
+
+    foreach (var version in versions)
+    {
+        AssertCurveStreamMatchesDom(vCurve, version, "Vector3");
+        AssertCurveStreamMatchesDom(qCurve, version, "Quaternion");
+        AssertCurveStreamMatchesDom(fCurve, version, "Float");
+        AssertCurveStreamMatchesDom(emptyCurve, version, "Vector3(empty)");
+    }
+}
+
+static void AssertCurveStreamMatchesDom<T>(AnimationCurve<T> curve, int[] version, string label)
+    where T : IYAMLExportable
+{
+    // The flag is read when ExportYAML builds the curve node, so toggle it around the build,
+    // not the emit. Both strings share identical document/parent framing, so any byte
+    // difference is purely the keyframe sequence (DOM nodes vs streaming node).
+    AnimationClipExportOptions.StreamKeyframes = false;
+    string dom = EmitYamlNodeInDocument(curve.ExportYAML(version));
+
+    AnimationClipExportOptions.StreamKeyframes = true;
+    string stream;
+    try
+    {
+        stream = EmitYamlNodeInDocument(curve.ExportYAML(version));
+    }
+    finally
+    {
+        AnimationClipExportOptions.StreamKeyframes = false;
+    }
+
+    Assert(
+        string.Equals(dom, stream, StringComparison.Ordinal),
+        $"Direct-YAML keyframe streaming diverged from DOM for {label} at version "
+        + $"{version[0]}.{version[1]}.\n--- DOM ---\n{dom}\n--- STREAM ---\n{stream}");
+}
+
+static string EmitYamlNodeInDocument(YAMLNode node)
+{
+    var sb = new StringBuilder();
+    using var sw = new StringWriter(sb);
+    var writer = new YAMLWriter();
+    var doc = new YAMLDocument();
+    var root = doc.CreateMappingRoot();
+    root.Add("AnimationCurveTest", node);
+    writer.AddDocument(doc);
+    writer.Write(sw);
+    return sb.ToString();
 }
 
 static void Assert(bool condition, string message)

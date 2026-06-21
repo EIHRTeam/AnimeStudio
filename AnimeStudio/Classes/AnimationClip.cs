@@ -172,7 +172,7 @@ namespace AnimeStudio
         {
             var node = new YAMLMappingNode();
             node.AddSerializedVersion(ToSerializedVersion(version));
-            node.Add(nameof(m_Curve), m_Curve.ExportYAML(version));
+            node.Add(nameof(m_Curve), ExportCurveYAML(version));
             node.Add(nameof(m_PreInfinity), m_PreInfinity);
             node.Add(nameof(m_PostInfinity), m_PostInfinity);
             if (version[0] > 5 || (version[0] == 5 && version[1] >= 3))//5.3 and up
@@ -180,6 +180,32 @@ namespace AnimeStudio
                 node.Add(nameof(m_RotationOrder), m_RotationOrder);
             }
             return node;
+        }
+
+        // Keyframe lists dominate AnimationClip DOM allocation. When the experimental
+        // direct-write switch is on (thread-scoped), emit them through a streaming node
+        // that writes bytes straight to the Emitter instead of materializing per-keyframe
+        // nodes. Default (flag off) keeps the original DOM path, so baseline output is
+        // byte-for-byte identical. Only the three concrete leaf types are streamed; any
+        // other T falls back to the DOM path (and the self-check would catch a mismatch).
+        private YAMLNode ExportCurveYAML(int[] version)
+        {
+            if (AnimationClipExportOptions.StreamKeyframes)
+            {
+                if (typeof(T) == typeof(Vector3))
+                {
+                    return new Vector3KeyframeStreamNode((List<Keyframe<Vector3>>)(object)m_Curve, version);
+                }
+                if (typeof(T) == typeof(Quaternion))
+                {
+                    return new QuaternionKeyframeStreamNode((List<Keyframe<Quaternion>>)(object)m_Curve, version);
+                }
+                if (typeof(T) == typeof(Float))
+                {
+                    return new FloatKeyframeStreamNode((List<Keyframe<Float>>)(object)m_Curve, version);
+                }
+            }
+            return m_Curve.ExportYAML(version);
         }
 
         private int ToSerializedVersion(int[] version)

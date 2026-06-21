@@ -165,6 +165,46 @@ namespace AnimeStudio
         }
         public static string ConvertSerializedAnimationClip(AnimationClip animationClip)
         {
+            switch (DirectYamlSelfCheck.Mode)
+            {
+                case DirectYamlMode.Trust:
+                    // Streaming only (skips the DOM build): the actual speedup, output not cross-checked.
+                    AnimationClipExportOptions.StreamKeyframes = true;
+                    try
+                    {
+                        DirectYamlSelfCheck.RecordTrusted();
+                        return BuildAnimationClipYaml(animationClip);
+                    }
+                    finally
+                    {
+                        AnimationClipExportOptions.StreamKeyframes = false;
+                    }
+
+                case DirectYamlMode.Verify:
+                {
+                    // Build the authoritative DOM string, then the streaming string, and reconcile:
+                    // emit the streaming bytes when identical, else fall back to the DOM bytes.
+                    string dom = BuildAnimationClipYaml(animationClip);
+                    string stream;
+                    AnimationClipExportOptions.StreamKeyframes = true;
+                    try
+                    {
+                        stream = BuildAnimationClipYaml(animationClip);
+                    }
+                    finally
+                    {
+                        AnimationClipExportOptions.StreamKeyframes = false;
+                    }
+                    return DirectYamlSelfCheck.ReconcileVerify(animationClip, dom, stream);
+                }
+
+                default:
+                    return BuildAnimationClipYaml(animationClip);
+            }
+        }
+
+        private static string BuildAnimationClipYaml(AnimationClip animationClip)
+        {
             var sb = new StringBuilder();
             using (var stringWriter = new StringWriter(sb))
             {
