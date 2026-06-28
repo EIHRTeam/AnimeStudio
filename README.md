@@ -3,6 +3,9 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EIHRTeam/AnimeStudio)<br>
 [Ask DeepWiki](https://deepwiki.com/EIHRTeam/AnimeStudio)
 
+> [!IMPORTANT]
+> This project has been deprecated, use [Endfield Studio](https://github.com/EIHRTeam/EndfieldStudio) insted.
+
 This is a fork of the original Anime Studio, focused on improving Linux CI/CD support and compatibility with macOS environments.
 
 The primary goal of this fork is to optimize the CLI for batch processing *Arknights: Endfield* VFS files in low-memory (specifically 16 GB or less) Linux and macOS environments. Maintenance of the GUI version and support for other games are not planned and will not be under consideration.
