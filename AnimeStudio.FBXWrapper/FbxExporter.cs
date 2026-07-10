@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 
 namespace AnimeStudio.FbxInterop
 {
@@ -9,6 +10,7 @@ namespace AnimeStudio.FbxInterop
     {
 
         private FbxExporterContext _context;
+        private int _disposeState;
 
         private readonly string _fileName;
         private readonly IImported _imported;
@@ -29,25 +31,21 @@ namespace AnimeStudio.FbxInterop
 
         public void Dispose()
         {
-            if (IsDisposed)
-            {
-                return;
-            }
-
             Dispose(true);
             GC.SuppressFinalize(this);
         }
 
-        public bool IsDisposed { get; private set; }
+        public bool IsDisposed => Volatile.Read(ref _disposeState) != 0;
 
         private void Dispose(bool disposing)
         {
-            if (disposing)
+            if (Interlocked.Exchange(ref _disposeState, 1) != 0)
             {
-                _context.Dispose();
+                return;
             }
 
-            IsDisposed = true;
+            _context?.Dispose();
+            _context = null;
         }
 
         internal void Initialize()

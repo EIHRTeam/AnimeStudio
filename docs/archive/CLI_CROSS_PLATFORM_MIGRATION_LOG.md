@@ -1,3 +1,6 @@
+> Historical document. Current sources of truth are `/ROADMAP.md`, `/PLAN.md`,
+> and `/STATUS.md`.
+
 # AnimeStudio CLI Cross-Platform Migration Log
 
 This document records implementation work by migration phase. Each implementation

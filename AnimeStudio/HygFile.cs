@@ -13,50 +13,77 @@ namespace AnimeStudio
     {
         private List<BundleFile.StorageBlock> m_BlocksInfo;
         private List<BundleFile.Node> m_DirectoryInfo;
+        private readonly ContainerStorageManager storageManager;
 
         public BundleFile.Header m_Header;
         public List<StreamFile> fileList;
         public long Offset;
 
-        public HygFile(FileReader reader, string path) {
-            Offset = reader.Position;
-            reader.Endian = EndianType.BigEndian; // uses big endian
+        public HygFile(FileReader reader, string path)
+            : this(reader, path, new ContainerStorageManager(new ContainerStorageOptions()), true)
+        {
+        }
 
-            var signature = reader.ReadBytes(7);
-            Logger.Verbose($"Parsed signature {Convert.ToHexString(signature)}");
-            if (!signature.SequenceEqual(new byte[] { 0xC3, 0x9C, 0xC3, 0xA3, 0xC3, 0x8A, 0x00 }))
-                throw new Exception("not a Hyg file");
+        internal HygFile(FileReader reader, string path, ContainerStorageManager storageManager)
+            : this(reader, path, storageManager, false)
+        {
+        }
 
-            ulong headerKey1 = reader.ReadUInt32();
-            ulong headerKey2 = reader.ReadUInt64();
-            var header = reader.ReadBytes(32);
-
-            HygUtils.Decrypt(header, headerKey1, headerKey2, false); // descramble keys here
-
-            m_Header = new BundleFile.Header
+        private HygFile(
+            FileReader reader,
+            string path,
+            ContainerStorageManager storageManager,
+            bool ownsStorageManager)
+        {
+            this.storageManager = storageManager ?? throw new ArgumentNullException(nameof(storageManager));
+            try
             {
-                version = 6,
-                unityVersion = "5.x.x",
-                unityRevision = "2022.3.43f1",
-            };
+                Offset = reader.Position;
+                reader.Endian = EndianType.BigEndian; // uses big endian
 
-            using (var headerReader = new EndianBinaryReader(new MemoryStream(header)))
-            {
-                headerReader.Endian = EndianType.LittleEndian;
-                long fileSize = headerReader.ReadInt64();
-                m_Header.compressedBlocksInfoSize = headerReader.ReadUInt32();
-                m_Header.uncompressedBlocksInfoSize = headerReader.ReadUInt32();
-                m_Header.flags = (ArchiveFlags)headerReader.ReadUInt32();
+                var signature = reader.ReadBytes(7);
+                Logger.Verbose($"Parsed signature {Convert.ToHexString(signature)}");
+                if (!signature.SequenceEqual(new byte[] { 0xC3, 0x9C, 0xC3, 0xA3, 0xC3, 0x8A, 0x00 }))
+                    throw new Exception("not a Hyg file");
+
+                ulong headerKey1 = reader.ReadUInt32();
+                ulong headerKey2 = reader.ReadUInt64();
+                var header = reader.ReadBytes(32);
+
+                HygUtils.Decrypt(header, headerKey1, headerKey2, false); // descramble keys here
+
+                m_Header = new BundleFile.Header
+                {
+                    version = 6,
+                    unityVersion = "5.x.x",
+                    unityRevision = "2022.3.43f1",
+                };
+
+                using (var headerReader = new EndianBinaryReader(new MemoryStream(header)))
+                {
+                    headerReader.Endian = EndianType.LittleEndian;
+                    long fileSize = headerReader.ReadInt64();
+                    m_Header.compressedBlocksInfoSize = headerReader.ReadUInt32();
+                    m_Header.uncompressedBlocksInfoSize = headerReader.ReadUInt32();
+                    m_Header.flags = (ArchiveFlags)headerReader.ReadUInt32();
+                }
+
+                Logger.Verbose($"Header : {m_Header.ToString()}");
+                reader.AlignStream(16);
+
+                ReadBlocksInfoAndDirectory(reader);
+                reader.AlignStream(16);
+                using var blocksStream = CreateBlocksStream(path);
+                ReadBlocks(reader, blocksStream);
+                ReadFiles(blocksStream);
             }
-
-            Logger.Verbose($"Header : {m_Header.ToString()}");
-            reader.AlignStream(16);
-
-            ReadBlocksInfoAndDirectory(reader);
-            reader.AlignStream(16);
-            using var blocksStream = CreateBlocksStream(path);
-            ReadBlocks(reader, blocksStream);
-            ReadFiles(blocksStream, path);
+            finally
+            {
+                if (ownsStorageManager)
+                {
+                    storageManager.Dispose();
+                }
+            }
         }
 
         private void ReadBlocksInfoAndDirectory(FileReader reader)
@@ -66,7 +93,7 @@ namespace AnimeStudio
             // decrypt
             HygUtils.Decrypt(blocksInfoBytes, m_Header.compressedBlocksInfoSize, m_Header.uncompressedBlocksInfoSize);
 
-            MemoryStream blocksInfoUncompressedStream = new MemoryStream();
+            MemoryStream blocksInfoUncompressedStream;
             var blocksInfoBytesSpan = blocksInfoBytes.AsSpan(0, blocksInfoBytes.Length);
             var uncompressedSize = m_Header.uncompressedBlocksInfoSize;
             var compressionType = CompressionType.Lz4; // flags are lying
@@ -82,23 +109,18 @@ namespace AnimeStudio
                 case CompressionType.Lz4:
                 case CompressionType.Lz4HC:
                 {
-                    var uncompressedBytes = ArrayPool<byte>.Shared.Rent((int)uncompressedSize);
-                    try
+                    var uncompressedBytes = new byte[checked((int)uncompressedSize)];
+                    var uncompressedBytesSpan = uncompressedBytes.AsSpan();
+                    var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
+                    if (numWrite != uncompressedSize)
                     {
-                        var uncompressedBytesSpan = uncompressedBytes.AsSpan(0, (int)uncompressedSize);
-                        var numWrite = LZ4.Instance.Decompress(blocksInfoBytesSpan, uncompressedBytesSpan);
-                        if (numWrite != uncompressedSize)
-                        {
-                            throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
-                        }
-                        blocksInfoUncompressedStream = new MemoryStream(uncompressedBytesSpan.ToArray());
+                        throw new IOException($"Lz4 decompression error, write {numWrite} bytes but expected {uncompressedSize} bytes");
                     }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(uncompressedBytes);
-                    }
+                    blocksInfoUncompressedStream = new MemoryStream(uncompressedBytes, writable: false);
                     break;
                 }
+                default:
+                    throw new IOException($"Unsupported block info compression type {compressionType}");
             }
 
             using (var blocksInfoReader = new EndianBinaryReader(blocksInfoUncompressedStream))
@@ -139,16 +161,13 @@ namespace AnimeStudio
             }
         }
 
-        private Stream CreateBlocksStream(string path)
+        private SharedBackingStore CreateBlocksStream(string path)
         {
-            Stream blocksStream;
-            var uncompressedSizeSum = m_BlocksInfo.Sum(x => (long)x.uncompressedSize);
+            var uncompressedSizeSum = m_BlocksInfo.Aggregate(
+                0L,
+                (total, block) => checked(total + block.uncompressedSize));
             Logger.Verbose($"Total size of decompressed blocks: 0x{uncompressedSizeSum:X}");
-            if (uncompressedSizeSum >= int.MaxValue)
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
-            else
-                blocksStream = new MemoryStream((int)uncompressedSizeSum);
-            return blocksStream;
+            return storageManager.Create(uncompressedSizeSum, path);
         }
 
         private void ReadBlocks(FileReader reader, Stream blocksStream)
@@ -214,30 +233,10 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadFiles(Stream blocksStream, string path)
+        private void ReadFiles(SharedBackingStore blocksStream)
         {
             Logger.Verbose($"Writing files from blocks stream...");
-
-            fileList = new List<StreamFile>();
-            for (int i = 0; i < m_DirectoryInfo.Count; i++)
-            {
-                var node = m_DirectoryInfo[i];
-                var file = new StreamFile();
-                fileList.Add(file);
-                file.path = node.path;
-                file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                    file.stream = new MemoryStream((int)node.size);
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
-            }
+            fileList = ContainerFileStreams.Create(blocksStream, m_DirectoryInfo);
         }
     }
 }

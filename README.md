@@ -1,4 +1,4 @@
-# Anime Studio
+# AnimeStudio CLI
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EIHRTeam/AnimeStudio)<br>
 [Ask DeepWiki](https://deepwiki.com/EIHRTeam/AnimeStudio)
@@ -12,57 +12,70 @@ The primary goal of this fork is to optimize the CLI for batch processing *Arkni
 
 Please note that much of the work on this fork was assisted by AI. The project is intended to “just work” for its specific use case, rather than to be a polished, elegant, or state-of-the-art solution.
 
-Original README follows.
+The project targets `.NET 10` exclusively. Install the .NET 10 runtime before using framework-dependent release packages.
 
----
+## Build
 
-# Anime Studio
-## Asset extraction tool for unity games !
+```bash
+dotnet restore AnimeStudio.sln
+dotnet build AnimeStudio.sln -c Release
+```
 
-![image](https://github.com/user-attachments/assets/fc1decdc-a589-43a2-b965-2d8151d0975f)
+For a verified Linux x64 release archive:
 
----
+```bash
+./build-linux-release.sh
+```
 
-# How do I use this ?
+Use `--version <version>`, `--output-dir <path>`, and `--deb` as needed. The
+script builds the solution, runs smoke tests, publishes for `linux-x64`, checks
+the native-library layout and dependencies, and prints the archive SHA256.
 
-You should look at the [official wiki](https://github.com/Escartem/AnimeStudio/wiki), if required look at the [original tutorial by Modder4869](https://gist.github.com/Modder4869/0f5371f8879607eb95b8e63badca227e) or the [original readme](https://github.com/RazTools/Studio/blob/main/README.md). Otherwise [join the discord](https://discord.gg/fzRdtVh) and ask there !
+## Usage
 
----
+```bash
+AnimeStudio.CLI <input_path> <output_path> --game ArknightsEndfield
+```
 
-# How do I download this ?
+Run `AnimeStudio.CLI --help` for the complete option list.
 
-## [Download Studio for .NET 9 (recommended ✨)](https://nightly.link/Escartem/AnimeStudio/workflows/build/master/AnimeStudio-net9.zip) or [Download Studio for .NET 8](https://nightly.link/Escartem/AnimeStudio/workflows/build/master/AnimeStudio-net8.zip)
+## Publish
 
----
+```bash
+./scripts/publish-cli.sh linux-x64 --output-dir artifacts
+./scripts/publish-cli.sh osx-arm64 --output-dir artifacts
+```
 
-# What is this ?
+On Windows:
 
-It's an up-to-date fork of Razmoth's one. After his repo was discontinued, bugs started to arise as games evolved, and people started making forks to fix some of them, but each one would not support the fixes by the others and so on. This version aims at being the new start base for AssetStudio, renamed as AnimeStudio, it supports all 3 main hoyo games, and is open to any contribution !
+```powershell
+./scripts/publish-cli.ps1 -RuntimeIdentifier win-x64 -OutputDirectory artifacts
+```
 
----
+Supported release RIDs:
 
-# What changed ?
+- `win-x64`
+- `linux-x64` with Debian GNU/Linux 13 as the baseline
+- `osx-arm64` with macOS 15 as the baseline
 
-This is a non-exhaustive list of modifications :
-- Removed usage of a [certain dll for a certain decryption](https://github.com/Escartem/AnimeStudio/commit/1fcfa9041e07cd0a98b4d23f1578e910256fa1f8) 👀
-- Merged fixes for Genshin, Star Rail and ZZZ suport with improvements
-- Dark mode
-- Reorganised menu bar for easier usage
-- Addes SHA256 hash for assets
-- New game selector merged with UnityCN keys list and updated UnityCN keys manager
-- Asset Browser improvements
-    - It is now possible to use json files instead of only message pack
-    - You can now relocate the sources files of a map instead of having to build a new one to adjust them, making maps no longer game install dir dependant
-    - Only selected assets are displayed in the main window when loading instead of the full blocks
-    - You can load 2 asset maps at once and view the difference between both
+## Development
 
----
+Current work is tracked in:
+
+- `ROADMAP.md`
+- `PLAN.md`
+- `STATUS.md`
+
+Historical migration reports are under `docs/archive/`.
+
+This repository is derived from AnimeStudio/AssetStudio forks maintained by
+Escartem, Razmoth, Perfare, and other contributors. See `LICENSE` and
+`THIRD_PARTY_NOTICES.md`.
+
+## Credits
 
 Special thanks to:
-- [hrothgar](https://github.com/hrothgar234567): Help in ZZZ fixes & some dll RE
-- Razmoth: Original AssetStudio for anime games support - [[project](https://github.com/RazTools/Studio)]
-- hashblen: ZZZ fixes fork - [[project](https://github.com/hashblen/ZZZ_Studio)]
-- yarik0chka: Genshin and Star Rail fixes fork - [[project](https://github.com/yarik0chka/YarikStudio)]
-- aelurum: AssetStudioMod - [[project](https://github.com/aelurum/AssetStudio)]
-- Perfare: The real original AssetStudio - [[project](https://github.com/perfare/AssetStudio)]
-- All of the others contributor of Razmoth's Studio
+
+- All contributors of the original Asset Studio
+- [Escartem](https://github.com/Escartem) and all contributors of Anime Studio
+- [ZengXiaoPi](https://github.com/ZengXiaoPi) and [mengxixiao](https://github.com/mengxixiao)

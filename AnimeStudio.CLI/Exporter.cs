@@ -7,11 +7,15 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace AnimeStudio.CLI
 {
     internal static class Exporter
     {
+        private static int fbxUnavailableWarningLogged;
+        private static int optimizedAnimatorWarningLogged;
+
         public static bool ExportTexture2D(AssetItem item, string exportPath)
         {
             var m_Texture2D = (Texture2D)item.Asset;
@@ -463,10 +467,24 @@ namespace AnimeStudio.CLI
 
         public static bool ExportAnimator(AssetItem item, string exportPath, List<AssetItem> animationList = null)
         {
+            var m_Animator = (Animator)item.Asset;
+            if (!TryGetAnimatorConversionSupport(m_Animator, out var reason))
+            {
+                LogUnsupportedAnimator(
+                    $"Skipping optimized Animator \"{item.Text}\" " +
+                    $"(PathID {item.m_PathID}, file {item.SourceFile.fileName}): " +
+                    reason);
+                return false;
+            }
+
+            if (!TryGetFbxExportSupport())
+            {
+                return false;
+            }
+
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
 
-            var m_Animator = (Animator)item.Asset;
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -496,6 +514,11 @@ namespace AnimeStudio.CLI
 
         public static bool ExportGameObject(AssetItem item, string exportPath, List <AssetItem> animationList = null)
         {
+            if (!TryGetFbxExportSupport())
+            {
+                return false;
+            }
+
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
 
@@ -505,6 +528,19 @@ namespace AnimeStudio.CLI
 
         public static bool ExportGameObject(GameObject gameObject, string exportPath, List<AssetItem> animationList = null)
         {
+            if (gameObject.m_Animator != null
+                && !TryGetAnimatorConversionSupport(gameObject.m_Animator, out var reason))
+            {
+                LogUnsupportedAnimator(
+                    $"Skipping optimized GameObject \"{gameObject.m_Name}\": {reason}");
+                return false;
+            }
+
+            if (!TryGetFbxExportSupport())
+            {
+                return false;
+            }
+
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -556,6 +592,51 @@ namespace AnimeStudio.CLI
                 fbxFormat = Properties.Settings.Default.fbxFormat
             };
             ModelExporter.ExportFbx(exportPath, convert, exportOptions);
+        }
+
+        private static bool TryGetFbxExportSupport()
+        {
+            if (PlatformCapabilities.TryGetFbxExportSupport(out var reason))
+            {
+                return true;
+            }
+
+            if (Interlocked.Exchange(ref fbxUnavailableWarningLogged, 1) == 0)
+            {
+                Logger.Warning($"Skipping FBX model exports: {reason}");
+            }
+
+            return false;
+        }
+
+        private static void LogUnsupportedAnimator(string message)
+        {
+            if (Interlocked.Exchange(ref optimizedAnimatorWarningLogged, 1) == 0)
+            {
+                Logger.Warning(
+                    $"{message} Further occurrences are logged only at verbose level.");
+                return;
+            }
+
+            Logger.Verbose(message);
+        }
+
+        private static bool TryGetAnimatorConversionSupport(Animator animator, out string reason)
+        {
+            if (animator.m_HasTransformHierarchy)
+            {
+                reason = string.Empty;
+                return true;
+            }
+
+            if (animator.m_Avatar != null && animator.m_Avatar.TryGet(out _))
+            {
+                reason = string.Empty;
+                return true;
+            }
+
+            reason = "its transform hierarchy is optimized and its Avatar is unavailable.";
+            return false;
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)

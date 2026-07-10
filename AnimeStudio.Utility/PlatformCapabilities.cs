@@ -17,6 +17,9 @@ namespace AnimeStudio
         public static bool SupportsFmodAudioConversion =>
             TryGetFmodAudioConversionSupport(out _);
 
+        public static bool SupportsFbxExport =>
+            TryGetFbxExportSupport(out _);
+
         public static bool TryGetAclAnimationDecompressionSupport(
             AnimationClip animationClip,
             Game game,
@@ -67,6 +70,20 @@ namespace AnimeStudio
         public static bool TryGetFmodAudioConversionSupport(out string reason)
         {
             return TryGetNativeLibrarySupport("fmod", out reason);
+        }
+
+        public static bool TryGetFbxExportSupport(out string reason)
+        {
+            if (DllLoader.IsLibraryAvailable("AnimeStudio.FBXNative", typeof(Fbx).Assembly))
+            {
+                reason = string.Empty;
+                return true;
+            }
+
+            reason =
+                $"Native library 'AnimeStudio.FBXNative' is unavailable on {PlatformName}. " +
+                "Publish the CLI for the target RID, for example '-r linux-x64'.";
+            return false;
         }
 
         internal static void EnsureFmodAudioConversionAvailable()

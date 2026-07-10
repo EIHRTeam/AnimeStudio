@@ -15,24 +15,35 @@ var rid = args[1];
 
 try
 {
+    var runtimeCompatible = IsRuntimeCompatible(rid);
     VerifyPackageLayout(publishDirectory, rid);
     VerifyRuntimeConfiguration(publishDirectory);
-    VerifyExplicitTypeFilter(publishDirectory);
-    VerifyScrapeChunkMerge(publishDirectory);
-    VerifyAclResultValidation(publishDirectory);
-    VerifyFmodAudioConversion(publishDirectory, rid);
+    VerifyStreamingConfiguration(publishDirectory, runtimeCompatible);
 
-    if (rid == "win-x64")
+    if (runtimeCompatible)
     {
-        VerifyWindowsNativeLibraries(publishDirectory);
-        VerifyWindowsCapabilityPath(publishDirectory);
-    }
-    else
-    {
-        VerifyUnixDegradationPaths(publishDirectory);
+        VerifyRunSummary(publishDirectory);
+        VerifyExplicitTypeFilter(publishDirectory);
+        VerifyScrapeChunkMerge(publishDirectory);
+        VerifyAclResultValidation(publishDirectory);
+        VerifyFmodAudioConversion(publishDirectory, rid);
+        VerifyFbxNativeSupport(publishDirectory);
+        VerifyFbxFailureCleanup(publishDirectory);
+        VerifyOptimizedAnimatorGuard(publishDirectory);
+
+        if (rid == "win-x64")
+        {
+            VerifyWindowsNativeLibraries(publishDirectory);
+            VerifyWindowsCapabilityPath(publishDirectory);
+        }
+        else
+        {
+            VerifyUnixDegradationPaths(publishDirectory);
+        }
     }
 
-    Console.WriteLine($"Package smoke checks passed for {rid}.");
+    var scope = runtimeCompatible ? "package and runtime" : "cross-platform package";
+    Console.WriteLine($"{scope} smoke checks passed for {rid}.");
     return 0;
 }
 catch (Exception exception)
@@ -61,6 +72,80 @@ static void VerifyRuntimeConfiguration(string publishDirectory)
     Assert(properties.GetProperty("System.GC.RetainVM").GetBoolean(), "GC RetainVM must remain enabled.");
 }
 
+static bool IsRuntimeCompatible(string rid)
+{
+    return rid switch
+    {
+        "win-x64" => OperatingSystem.IsWindows()
+            && RuntimeInformation.ProcessArchitecture == Architecture.X64,
+        "linux-x64" => OperatingSystem.IsLinux()
+            && RuntimeInformation.ProcessArchitecture == Architecture.X64,
+        "osx-arm64" => OperatingSystem.IsMacOS()
+            && RuntimeInformation.ProcessArchitecture == Architecture.Arm64,
+        _ => false
+    };
+}
+
+static void VerifyStreamingConfiguration(string publishDirectory, bool verifyRuntimeOverride)
+{
+    using (var document = JsonDocument.Parse(
+        File.ReadAllText(Path.Combine(publishDirectory, "appsettings.json"))))
+    {
+        var streaming = document.RootElement.GetProperty("streaming");
+        Assert(
+            streaming.GetProperty("containerMemoryThresholdMiB").GetInt64() == 256,
+            "The default container memory threshold must be 256 MiB.");
+        Assert(
+            streaming.GetProperty("temporaryDirectory").ValueKind == JsonValueKind.Null,
+            "The default temporary directory must remain platform-resolved.");
+    }
+
+    if (!verifyRuntimeOverride)
+    {
+        return;
+    }
+
+    var previousDirectory = Environment.GetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR");
+    var configuredDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-streaming-config-{Guid.NewGuid():N}");
+    try
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR", configuredDirectory);
+        using var context = CreateLoadContext(publishDirectory);
+        var cliAssembly = context.LoadFromAssemblyPath(
+            Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+        var settingsType = RequireType(cliAssembly, "AnimeStudio.CLI.Properties.Settings");
+        var defaultSettings = settingsType.GetProperty(
+            "Default",
+            BindingFlags.Public | BindingFlags.Static)
+            ?.GetValue(null)
+            ?? throw new MissingMemberException(settingsType.FullName, "Default");
+        var getOptionsMethod = settingsType.GetMethod(
+            "GetContainerStorageOptions",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new MissingMethodException(settingsType.FullName, "GetContainerStorageOptions");
+        var options = getOptionsMethod.Invoke(defaultSettings, null)
+            ?? throw new InvalidOperationException("Streaming options were not created.");
+        var optionsType = options.GetType();
+
+        Assert(
+            (long)(optionsType.GetProperty("MemoryThresholdBytes")?.GetValue(options)
+                ?? throw new MissingMemberException(optionsType.FullName, "MemoryThresholdBytes"))
+                == 256L * 1024 * 1024,
+            "Streaming threshold was not converted from MiB to bytes.");
+        Assert(
+            Path.GetFullPath((string)(optionsType.GetProperty("TemporaryDirectory")?.GetValue(options)
+                ?? throw new MissingMemberException(optionsType.FullName, "TemporaryDirectory")))
+                == Path.GetFullPath(configuredDirectory),
+            "ANIMESTUDIO_TEMP_DIR did not override the configured temporary directory.");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR", previousDirectory);
+    }
+}
+
 static void VerifyExplicitTypeFilter(string publishDirectory)
 {
     using var context = CreateLoadContext(publishDirectory);
@@ -86,11 +171,14 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
         $"animestudio-cli-types-smoke-{Guid.NewGuid():N}");
     var inputDirectory = Path.Combine(temporaryDirectory, "input");
     var outputDirectory = Path.Combine(temporaryDirectory, "output");
+    var originalOutput = Console.Out;
+    using var capturedOutput = new StringWriter();
 
     try
     {
         Directory.CreateDirectory(inputDirectory);
         File.WriteAllBytes(Path.Combine(inputDirectory, "empty.bin"), []);
+        Console.SetOut(capturedOutput);
         var exitCode = (int)mainMethod.Invoke(
             null,
             [
@@ -114,6 +202,80 @@ static void VerifyExplicitTypeFilter(string publishDirectory)
         Assert(
             !(bool)canParseMethod.Invoke(null, [mesh])!,
             "Explicit type filters must disable unrequested default types.");
+        var output = capturedOutput.ToString().TrimEnd();
+        Assert(output.Contains("Run summary:", StringComparison.Ordinal), "CLI run summary is missing.");
+        Assert(
+            output.Contains("Input size before extraction: 0 B (0 bytes)", StringComparison.Ordinal),
+            "CLI run summary has an incorrect input size.");
+        Assert(
+            output.Contains("Output files: 0", StringComparison.Ordinal),
+            "CLI run summary has an incorrect output file count.");
+        Assert(
+            output.EndsWith("Output size: 0 B (0 bytes)", StringComparison.Ordinal),
+            "CLI run summary is not the final CLI output.");
+    }
+    finally
+    {
+        Console.SetOut(originalOutput);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyRunSummary(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var summaryType = RequireType(cliAssembly, "AnimeStudio.CLI.RunSummary");
+    var formatElapsedMethod = summaryType.GetMethod(
+        "FormatElapsed",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "FormatElapsed");
+    var formatByteSizeMethod = summaryType.GetMethod(
+        "FormatByteSize",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "FormatByteSize");
+    var measureDirectoryMethod = summaryType.GetMethod(
+        "MeasureDirectory",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(summaryType.FullName, "MeasureDirectory");
+
+    Assert(
+        (string)formatElapsedMethod.Invoke(null, [TimeSpan.FromSeconds(12345)])!
+            == "03:25:45 (12345s)",
+        "Run summary elapsed-time format is incorrect.");
+    Assert(
+        (string)formatElapsedMethod.Invoke(null, [TimeSpan.FromSeconds(97261)])!
+            == "27:01:01 (97261s)",
+        "Run summary elapsed-time format must support more than 24 hours.");
+    Assert(
+        (string)formatByteSizeMethod.Invoke(null, [1536L])!
+            == "1.50 KiB (1,536 bytes)",
+        "Run summary byte-size format is incorrect.");
+
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-cli-summary-smoke-{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(temporaryDirectory, "nested"));
+        File.WriteAllBytes(Path.Combine(temporaryDirectory, "first.bin"), new byte[3]);
+        File.WriteAllBytes(Path.Combine(temporaryDirectory, "nested", "second.bin"), new byte[5]);
+        var statistics = measureDirectoryMethod.Invoke(null, [temporaryDirectory])
+            ?? throw new InvalidOperationException("Run summary returned no directory statistics.");
+        var statisticsType = statistics.GetType();
+
+        Assert(
+            (long)(statisticsType.GetProperty("FileCount")?.GetValue(statistics)
+                ?? throw new MissingMemberException(statisticsType.FullName, "FileCount")) == 2,
+            "Run summary directory file count is incorrect.");
+        Assert(
+            (long)(statisticsType.GetProperty("TotalBytes")?.GetValue(statistics)
+                ?? throw new MissingMemberException(statisticsType.FullName, "TotalBytes")) == 8,
+            "Run summary directory byte count is incorrect.");
     }
     finally
     {
@@ -322,6 +484,123 @@ static void VerifyPackageLayout(string publishDirectory, string rid)
     {
         Assert(!packageFiles.Contains(file), $"Foreign native file was published for {rid}: {file}");
     }
+}
+
+static void VerifyFbxNativeSupport(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var utilityAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.Utility.dll"));
+    var capabilitiesType = RequireType(utilityAssembly, "AnimeStudio.PlatformCapabilities");
+    var supportMethod = capabilitiesType.GetMethod(
+        "TryGetFbxExportSupport",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new MissingMethodException(
+            capabilitiesType.FullName,
+            "TryGetFbxExportSupport");
+    object?[] arguments = [null];
+
+    Assert(
+        (bool)supportMethod.Invoke(null, arguments)!,
+        $"FBXNative capability failed: {arguments[0]}");
+}
+
+static void VerifyFbxFailureCleanup(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var wrapperAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.FBXWrapper.dll"));
+    var coreAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.dll"));
+    var exporterContextType = RequireType(
+        wrapperAssembly,
+        "AnimeStudio.FbxInterop.FbxExporterContext");
+    var disposeMethod = exporterContextType.GetMethod(
+        "Dispose",
+        BindingFlags.Instance | BindingFlags.NonPublic,
+        [typeof(bool)])
+        ?? throw new MissingMethodException(exporterContextType.FullName, "Dispose");
+    var partialContext = RuntimeHelpers.GetUninitializedObject(exporterContextType);
+
+    disposeMethod.Invoke(partialContext, [false]);
+    disposeMethod.Invoke(partialContext, [false]);
+
+    var fbxType = RequireType(wrapperAssembly, "AnimeStudio.Fbx");
+    var exporterType = fbxType.GetNestedType("Exporter", BindingFlags.Public)
+        ?? throw new MissingMemberException(fbxType.FullName, "Exporter");
+    var exportOptionsType = fbxType.GetNestedType("ExportOptions", BindingFlags.Public)
+        ?? throw new MissingMemberException(fbxType.FullName, "ExportOptions");
+    var importedType = RequireType(coreAssembly, "AnimeStudio.IImported");
+    var exportMethod = exporterType.GetMethod(
+        "Export",
+        BindingFlags.Public | BindingFlags.Static,
+        [typeof(string), importedType, exportOptionsType])
+        ?? throw new MissingMethodException(exporterType.FullName, "Export");
+    var options = Activator.CreateInstance(exportOptionsType)
+        ?? throw new InvalidOperationException("Unable to create FBX export options.");
+    var originalDirectory = Directory.GetCurrentDirectory();
+    var temporaryDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"animestudio-fbx-cleanup-{Guid.NewGuid():N}");
+
+    try
+    {
+        try
+        {
+            exportMethod.Invoke(
+                null,
+                [Path.Combine(temporaryDirectory, "failure.fbx"), null, options]);
+            throw new InvalidOperationException("FBX export unexpectedly accepted a null model.");
+        }
+        catch (TargetInvocationException)
+        {
+        }
+
+        Assert(
+            Directory.GetCurrentDirectory() == originalDirectory,
+            "FBX export failure did not restore the working directory.");
+    }
+    finally
+    {
+        Directory.SetCurrentDirectory(originalDirectory);
+        if (Directory.Exists(temporaryDirectory))
+        {
+            Directory.Delete(temporaryDirectory, true);
+        }
+    }
+}
+
+static void VerifyOptimizedAnimatorGuard(string publishDirectory)
+{
+    using var context = CreateLoadContext(publishDirectory);
+    var cliAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.CLI.dll"));
+    var coreAssembly = context.LoadFromAssemblyPath(
+        Path.Combine(publishDirectory, "AnimeStudio.dll"));
+    var exporterType = RequireType(cliAssembly, "AnimeStudio.CLI.Exporter");
+    var animatorType = RequireType(coreAssembly, "AnimeStudio.Animator");
+    var supportMethod = exporterType.GetMethod(
+        "TryGetAnimatorConversionSupport",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(
+            exporterType.FullName,
+            "TryGetAnimatorConversionSupport");
+    var animator = RuntimeHelpers.GetUninitializedObject(animatorType);
+    RequireField(animatorType, "m_HasTransformHierarchy").SetValue(animator, false);
+    object?[] arguments = [animator, null];
+
+    Assert(
+        !(bool)supportMethod.Invoke(null, arguments)!,
+        "Optimized Animator without an Avatar was accepted.");
+    Assert(
+        arguments[1] is string reason && reason.Contains("Avatar", StringComparison.Ordinal),
+        "Optimized Animator rejection did not explain the missing Avatar.");
+
+    RequireField(animatorType, "m_HasTransformHierarchy").SetValue(animator, true);
+    arguments = [animator, null];
+    Assert(
+        (bool)supportMethod.Invoke(null, arguments)!,
+        "Animator with a transform hierarchy was rejected.");
 }
 
 static void VerifyFmodAudioConversion(string publishDirectory, string rid)

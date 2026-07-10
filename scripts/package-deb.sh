@@ -88,6 +88,7 @@ cat > "${pkg_root}/usr/bin/anime-studio" <<'SCRIPT'
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 export DOTNET_GCConserveMemory="${DOTNET_GCConserveMemory:-5}"
+export ANIMESTUDIO_TEMP_DIR="${ANIMESTUDIO_TEMP_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/animestudio/tmp}"
 exec dotnet /usr/lib/anime-studio/AnimeStudio.CLI.dll "$@"
 SCRIPT
 chmod 755 "${pkg_root}/usr/bin/anime-studio"

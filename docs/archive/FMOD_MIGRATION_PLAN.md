@@ -1,3 +1,6 @@
+> Historical document. Current sources of truth are `/ROADMAP.md`, `/PLAN.md`,
+> and `/STATUS.md`.
+
 # FMOD 1.07 → 2.03 升级与跨平台音频支持计划
 
 ## Context

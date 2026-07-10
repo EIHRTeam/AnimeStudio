@@ -19,6 +19,12 @@ namespace AnimeStudio.CLI.Properties
         public int? channel { get; set; }
     }
 
+    public sealed class StreamingSetting
+    {
+        public long containerMemoryThresholdMiB { get; set; } = 256;
+        public string temporaryDirectory { get; set; }
+    }
+
     public sealed class Settings
     {
         private const string FileName = "appsettings.json";
@@ -56,6 +62,7 @@ namespace AnimeStudio.CLI.Properties
         public bool minimalAssetMap { get; set; } = true;
         public bool allowDuplicates { get; set; }
         public bool scrapeMonos { get; set; }
+        public StreamingSetting streaming { get; set; } = new();
         public Dictionary<ClassIDType, TypeSetting> types { get; set; } = CreateDefaultTypes();
         public Dictionary<string, UvSetting> uvs { get; set; } = CreateDefaultUvs();
         public Dictionary<string, int> texs { get; set; } = [];
@@ -71,6 +78,29 @@ namespace AnimeStudio.CLI.Properties
                 pair => (pair.Value.enabled.GetValueOrDefault(), pair.Value.channel.GetValueOrDefault()));
 
         public Dictionary<string, int> GetTextures() => new(texs);
+
+        public ContainerStorageOptions GetContainerStorageOptions()
+        {
+            var thresholdMiB = streaming?.containerMemoryThresholdMiB ?? 256;
+            if (thresholdMiB < 0)
+            {
+                throw new InvalidDataException(
+                    $"streaming.containerMemoryThresholdMiB cannot be negative: {thresholdMiB}.");
+            }
+
+            var environmentDirectory = Environment.GetEnvironmentVariable("ANIMESTUDIO_TEMP_DIR");
+            var temporaryDirectory = !string.IsNullOrWhiteSpace(environmentDirectory)
+                ? environmentDirectory
+                : streaming?.temporaryDirectory;
+
+            return new ContainerStorageOptions
+            {
+                MemoryThresholdBytes = checked(thresholdMiB * 1024L * 1024L),
+                TemporaryDirectory = string.IsNullOrWhiteSpace(temporaryDirectory)
+                    ? null
+                    : Path.GetFullPath(temporaryDirectory)
+            };
+        }
 
         private static Settings Load()
         {
@@ -88,6 +118,7 @@ namespace AnimeStudio.CLI.Properties
                 settings.types = MergeTypeSettings(CreateDefaultTypes(), settings.types);
                 settings.uvs = MergeUvSettings(CreateDefaultUvs(), settings.uvs);
                 settings.texs ??= [];
+                settings.streaming ??= new StreamingSetting();
                 return settings;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
